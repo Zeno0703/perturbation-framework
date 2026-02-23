@@ -12,19 +12,10 @@ import java.nio.file.Path;
 public final class PerturbationAgent {
 
     public static void premain(String agentArgs, Instrumentation inst) {
-        bootstrap(inst);
-    }
-
-    public static void agentmain(String agentArgs, Instrumentation inst) {
-        bootstrap(inst);
-    }
-
-    private static void bootstrap(Instrumentation inst) {
         Path outDir = Path.of(System.getProperty("perturb.outDir", "target/perturb"));
         try {
             Files.createDirectories(outDir);
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
 
         TestOutcomeTracker.clear();
         ProbeExecutionTracker.clear();

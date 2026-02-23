@@ -14,10 +14,6 @@ public final class ProbeExecutionTracker {
 
     private static final Map<String, Set<Integer>> hits = new ConcurrentHashMap<>();
 
-    private ProbeExecutionTracker() {
-        throw new UnsupportedOperationException("Utility class");
-    }
-
     public static void record(String testId, int probeId) {
         hits.computeIfAbsent(testId, k -> Collections.synchronizedSet(new HashSet<>())).add(probeId);
     }

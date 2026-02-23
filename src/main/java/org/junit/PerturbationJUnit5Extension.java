@@ -29,7 +29,7 @@ public final class PerturbationJUnit5Extension implements BeforeEachCallback, Af
         TestOutcomeTracker.fail(stableId(context));
     }
 
-    private static String stableId(ExtensionContext ctx) {
-        return ctx.getRequiredTestClass().getName() + "#" + ctx.getRequiredTestMethod().getName();
+    private static String stableId(ExtensionContext context) {
+        return context.getRequiredTestClass().getName() + "#" + context.getRequiredTestMethod().getName();
     }
 }

@@ -7,11 +7,9 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 public final class ProbeCatalog {
 
-    private static final AtomicInteger counter = new AtomicInteger();
     private static final Map<String, Integer> locations = new ConcurrentHashMap<>();
     private static final Map<Integer, String> descriptions = new ConcurrentHashMap<>();
     private static final Set<Integer> probes = ConcurrentHashMap.newKeySet();
@@ -22,20 +20,19 @@ public final class ProbeCatalog {
     }
 
     public static int idForLocation(String locationKey) {
-        Integer existing = locations.get(locationKey);
-        if (existing != null) {
-            return existing;
-        }
-
         if (frozen) {
-            return -1;
+            return locations.getOrDefault(locationKey, -1);
         }
 
-        int id = counter.incrementAndGet();
-        Integer previous = locations.putIfAbsent(locationKey, id);
-        int chosen = previous != null ? previous : id;
-        probes.add(chosen);
-        return chosen;
+        return locations.computeIfAbsent(locationKey, key -> {
+            int id = Math.abs(key.hashCode());
+            while (probes.contains(id)) {
+                id++;
+            }
+
+            probes.add(id);
+            return id;
+        });
     }
 
     public static void freeze() {
