@@ -21,14 +21,18 @@ def clear_artifacts(project_dir):
 def run_maven(probe_id, project_dir, agent_jar, target_package, timeout_limit=None, targeted_tests=None):
     clear_artifacts(project_dir)
 
+    arg_line = (
+        f'-javaagent:"{agent_jar}" '
+        f'-Dperturb.package={target_package} '
+        f'-Dperturb.outDir={OUT_DIR} '
+        f'-Dperturb.activeProbe={probe_id} '
+        '-Dorg.agent.hidden.bytebuddy.experimental=true'
+    )
+
     command = [
         "mvn", "test",
-        f'-DargLine=-javaagent:"{agent_jar}"',
-        f"-Dperturb.package={target_package}",
+        f'-DargLine={arg_line}',
         "-Djunit.jupiter.extensions.autodetection.enabled=true",
-        f"-Dperturb.outDir={OUT_DIR}",
-        f"-Dperturb.activeProbe={probe_id}",
-        "-Dorg.agent.hidden.bytebuddy.experimental=true",
         "-Djacoco.skip=true"
     ]
 
@@ -49,14 +53,28 @@ def run_maven(probe_id, project_dir, agent_jar, target_package, timeout_limit=No
         return -1, "PROCESS TIMED OUT", True
 
 
+def unescape(text):
+    return text.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\\", "\\")
+
 def read_artifact(project_dir, filename):
     path = os.path.join(project_dir, OUT_DIR, filename)
     try:
         with open(path, encoding="utf-8") as f:
-            return [line.strip().split("\t", 1) for line in f if "\t" in line]
+            result = []
+            for line in f:
+                if "\t" not in line:
+                    continue
+
+                parts = line.rstrip("\r\n").split("\t", 1)
+
+                if len(parts) == 2:
+                    key = unescape(parts[0])
+                    val = unescape(parts[1])
+                    result.append([key, val])
+
+            return result
     except FileNotFoundError:
         return []
-
 
 def discovery(project_dir, agent_jar, target_package):
     print("Running Discovery Phase...")
@@ -128,7 +146,7 @@ def main():
     project_dir, agent_jar, target_package = sys.argv[1:4]
 
     probes, hits, discovery_duration = discovery(project_dir, agent_jar, target_package)
-    dynamic_timeout = max(discovery_duration * 2.0, 30.0)
+    dynamic_timeout = max(discovery_duration * 2.0, 10.0)
     print(f"Set strict timeout limit for evaluations: {dynamic_timeout:.2f} seconds")
 
     scores = []

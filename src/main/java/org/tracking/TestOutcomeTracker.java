@@ -9,14 +9,22 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class TestOutcomeTracker {
 
-    private static final Map<String, Boolean> outcomes = new ConcurrentHashMap<>();
+    private static final Map<String, String> outcomes = new ConcurrentHashMap<>();
 
     public static void pass(String testId) {
-        outcomes.put(testId, true);
+        outcomes.put(testId, "PASS");
+    }
+
+    public static void fail(String testId, Throwable cause) {
+        if (cause != null) {
+            outcomes.put(testId, "FAIL (" + cause.getClass().getSimpleName() + ")");
+        } else {
+            outcomes.put(testId, "FAIL");
+        }
     }
 
     public static void fail(String testId) {
-        outcomes.put(testId, false);
+        fail(testId, null);
     }
 
     public static void clear() {
@@ -25,10 +33,10 @@ public class TestOutcomeTracker {
 
     public static void dumpTo(Path file) throws IOException {
         StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, Boolean> e : outcomes.entrySet()) {
+        for (Map.Entry<String, String> e : outcomes.entrySet()) {
             sb.append(e.getKey())
                     .append('\t')
-                    .append(e.getValue() ? "PASS" : "FAIL")
+                    .append(e.getValue())
                     .append('\n');
         }
         FileUtils.writeAtomic(file, sb.toString());

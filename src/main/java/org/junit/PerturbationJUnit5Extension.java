@@ -26,7 +26,7 @@ public class PerturbationJUnit5Extension implements BeforeEachCallback, AfterEac
 
     @Override
     public void testFailed(ExtensionContext context, Throwable cause) {
-        TestOutcomeTracker.fail(stableId(context));
+        TestOutcomeTracker.fail(stableId(context), cause);
     }
 
     private static String stableId(ExtensionContext context) {

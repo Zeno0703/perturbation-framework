@@ -27,15 +27,37 @@ public class ReturnPerturbationStrategy implements PerturbationStrategy {
         return probeId;
     }
 
+    public static int perturbInt(int returnValue, String locationKey) {
+        int probeId = resolveProbe(locationKey, "int");
+        if (probeId != -1) {
+            return PerturbationGate.apply(returnValue, probeId);
+        }
+        return returnValue;
+    }
+
+    public static boolean perturbBoolean(boolean returnValue, String locationKey) {
+        int probeId = resolveProbe(locationKey, "boolean");
+        if (probeId != -1) {
+            return PerturbationGate.apply(returnValue, probeId);
+        }
+        return returnValue;
+    }
+
+    public static Object perturbObject(Object returnValue, String locationKey) {
+        if (returnValue != null) {
+            int probeId = resolveProbe(locationKey, "Object");
+            if (probeId != -1) {
+                return PerturbationGate.apply(returnValue, probeId);
+            }
+        }
+        return returnValue;
+    }
+
     public static class IntegerAdvice {
         @Advice.OnMethodExit
         public static void exit(@Advice.Return(readOnly = false) int returnValue,
                                 @Advice.Origin String locationKey) {
-
-            int probeId = resolveProbe(locationKey, "int");
-            if (probeId != -1) {
-                returnValue = PerturbationGate.apply(returnValue, probeId);
-            }
+            returnValue = ReturnPerturbationStrategy.perturbInt(returnValue, locationKey);
         }
     }
 
@@ -43,11 +65,7 @@ public class ReturnPerturbationStrategy implements PerturbationStrategy {
         @Advice.OnMethodExit
         public static void exit(@Advice.Return(readOnly = false) boolean returnValue,
                                 @Advice.Origin String locationKey) {
-
-            int probeId = resolveProbe(locationKey, "boolean");
-            if (probeId != -1) {
-                returnValue = PerturbationGate.apply(returnValue, probeId);
-            }
+            returnValue = ReturnPerturbationStrategy.perturbBoolean(returnValue, locationKey);
         }
     }
 
@@ -55,13 +73,7 @@ public class ReturnPerturbationStrategy implements PerturbationStrategy {
         @Advice.OnMethodExit
         public static void exit(@Advice.Return(readOnly = false, typing = Assigner.Typing.DYNAMIC) Object returnValue,
                                 @Advice.Origin String locationKey) {
-
-            if (returnValue != null) {
-                int probeId = resolveProbe(locationKey, "Object");
-                if (probeId != -1) {
-                    returnValue = PerturbationGate.apply(returnValue, probeId);
-                }
-            }
+            returnValue = ReturnPerturbationStrategy.perturbObject(returnValue, locationKey);
         }
     }
 }

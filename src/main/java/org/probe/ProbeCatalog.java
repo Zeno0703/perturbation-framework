@@ -40,7 +40,7 @@ public class ProbeCatalog {
     }
 
     public static void describe(int probeId, String description) {
-        descriptions.put(probeId, description);
+        descriptions.put(probeId, org.utils.StringUtils.sanitize(description));
     }
 
     public static String descriptionFor(int probeId) {

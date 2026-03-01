@@ -26,45 +26,46 @@ public class ArgumentPerturbationStrategy implements PerturbationStrategy {
         );
     }
 
+    public static Object[] perturbArguments(Object[] args, String locationKey) {
+        Object[] modifiedArgs = new Object[args.length];
+        System.arraycopy(args, 0, modifiedArgs, 0, args.length);
+        boolean writeBack = false;
+
+        for (int i = 0; i < modifiedArgs.length; i++) {
+            Object currentArg = modifiedArgs[i];
+            if (currentArg == null) continue;
+
+            String argKey = locationKey + ":arg:" + i;
+            int probeId = ProbeCatalog.idForLocation(argKey);
+
+            if (probeId != -1) {
+                String typeName = "Object";
+                if (currentArg instanceof Integer num) {
+                    typeName = "Integer";
+                    modifiedArgs[i] = PerturbationGate.apply(num.intValue(), probeId);
+                } else if (currentArg instanceof Boolean bool) {
+                    typeName = "boolean";
+                    modifiedArgs[i] = PerturbationGate.apply(bool.booleanValue(), probeId);
+                } else {
+                    modifiedArgs[i] = PerturbationGate.apply(currentArg, probeId);
+                }
+
+                ProbeCatalog.describe(probeId, "Modified " + typeName + " argument at index " + i + " in " + locationKey);
+                writeBack = true;
+            }
+        }
+
+        return writeBack ? modifiedArgs : args;
+    }
+
     public static class ArgumentAdvice {
         @Advice.OnMethodEnter
         public static void enter(
                 @Advice.AllArguments(readOnly = false, typing = Assigner.Typing.DYNAMIC) Object[] args,
                 @Advice.Origin String locationKey) {
-            if (args == null || args.length == 0) {
-                return;
-            }
 
-            Object[] modifiedArgs = new Object[args.length];
-            System.arraycopy(args, 0, modifiedArgs, 0, args.length);
-            boolean writeBack = false;
-
-            for (int i = 0; i < modifiedArgs.length; i++) {
-                Object currentArg = modifiedArgs[i];
-                if (currentArg == null) continue;
-
-                String argKey = locationKey + ":arg:" + i;
-                int probeId = ProbeCatalog.idForLocation(argKey);
-
-                if (probeId != -1) {
-                    String typeName = "Object";
-                    if (currentArg instanceof Integer num) {
-                        typeName = "Integer";
-                        modifiedArgs[i] = PerturbationGate.apply(num.intValue(), probeId);
-                    } else if (currentArg instanceof Boolean bool) {
-                        typeName = "boolean";
-                        modifiedArgs[i] = PerturbationGate.apply(bool.booleanValue(), probeId);
-                    } else {
-                        modifiedArgs[i] = PerturbationGate.apply(currentArg, probeId);
-                    }
-
-                    ProbeCatalog.describe(probeId, "Modified " + typeName + " argument at index " + i + " in " + locationKey);
-                    writeBack = true;
-                }
-            }
-
-            if (writeBack) {
-                args = modifiedArgs;
+            if (args != null && args.length > 0) {
+                args = ArgumentPerturbationStrategy.perturbArguments(args, locationKey);
             }
         }
     }
