@@ -208,7 +208,12 @@ def escape_html(text):
     return text.replace('<', '&lt;').replace('>', '&gt;')
 
 
-def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tier3_probes):
+def escape_js(text):
+    if not text: return ""
+    return str(text).replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"')
+
+
+def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, global_tier3_probes):
     html_path = os.path.join(project_dir, OUT_DIR, "dashboard.html")
 
     file_cache = {}
@@ -222,43 +227,88 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
             if fqcn != "unknown":
                 needed_files.add((fqcn, False))
 
+    for p in dashboard_ledger:
+        if p['fqcn'] and p['fqcn'] != "unknown":
+            needed_files.add((p['fqcn'], False))
+
     for fqcn, is_test in needed_files:
         file_cache[fqcn] = read_java_file(project_dir, fqcn, is_test)
 
-    file_cache_json = json.dumps(file_cache)
+    # Safely dump cache to JSON and prevent HTML script tag breakage
+    file_cache_json = json.dumps(file_cache).replace("</", "<\\/")
 
+    # ---------------------------------------------------------
+    # Generate Probe-Centric (Ledger) Rows
+    # ---------------------------------------------------------
+    ledger_rows = ""
+    for p in sorted(dashboard_ledger, key=lambda x: (x['tier'], -len(x['tests']))):
+        safe_id = sanitize_id(f"ledger_{p['id']}")
+        class_name = p['fqcn'].split('.')[-1] if p['fqcn'] != 'unknown' else 'Unknown'
+
+        if p['tier'] == 1:
+            badge_class = "badge-danger"
+            status_text = "Globally Unprotected"
+        elif p['tier'] == 2:
+            badge_class = "badge-warning"
+            status_text = "Execution Crash"
+        else:
+            badge_class = "badge-success"
+            status_text = "Globally Caught"
+
+        witness_list = "".join([f"<li style='margin-bottom: 4px;'>{escape_html(t)}</li>" for t in p['tests']])
+        ide_link = to_idea_link(project_dir, p['fqcn'], False)
+
+        ledger_rows += f"""
+        <tr class="clickable-row" onclick="toggleRow(event, 'ledger-desc-{safe_id}')">
+            <td class="font-medium code-font">#{p['id']}</td>
+            <td class="code-font">{class_name}.{p['method']}()</td>
+            <td><div class="scrollable-text">{escape_html(p['desc'])}</div></td>
+            <td class="text-center">{len(p['tests'])} Tests</td>
+            <td class="text-right"><span id="ledger-badge-{p['id']}" class="badge {badge_class}">{status_text}</span></td>
+        </tr>
+        <tr id="ledger-desc-{safe_id}" class="details-row" style="display: none;">
+            <td colspan="5" class="p-0">
+                <div class="test-details">
+                    <div style="display: flex; gap: 24px; margin-bottom: 0;">
+                        <div style="flex: 2; overflow: hidden;">
+                            <h4 style="margin-top: 0; font-size: 13px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px;">Witness List (Footprint)</h4>
+                            <ul style="max-height: 150px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; padding-left: 20px; color: var(--text-main); margin: 0;">
+                                {witness_list}
+                            </ul>
+                        </div>
+                        <div style="flex: 1; display: flex; flex-direction: column; justify-content: flex-start; gap: 12px; border-left: 1px solid #e2e8f0; padding-left: 24px;">
+                            <h4 style="margin-top: 0; font-size: 13px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.05em; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px;">Action Panel</h4>
+                            <a href="{ide_link}" class="btn-primary" style="padding: 12px; font-size: 13px; text-align: center; justify-content: center; white-space: normal;">🔗 Open Target in IDE to Write a New Test</a>
+                            <button class="btn-small" style="padding: 12px; width: 100%; justify-content: center;" onclick="event.stopPropagation(); openCodeModal('{escape_js(p['fqcn'])}', '{escape_js(p['method'])}', null, null)">View Target Source Code</button>
+                        </div>
+                    </div>
+                </div>
+            </td>
+        </tr>
+        """
+
+    # ---------------------------------------------------------
+    # Generate Test-Centric Rows
+    # ---------------------------------------------------------
     sorted_tests = sorted(
         test_stats.items(),
         key=lambda x: (x[1]['hit'] - x[1]['caught'], x[1]['hit']),
         reverse=True
     )
 
-    probe_rows = ""
-    for p in probes_data:
-        badge_class = "badge-danger" if p['tier'].startswith("Tier 1") else (
-            "badge-warning" if p['tier'].startswith("Tier 2") else "badge-success")
-        probe_rows += f"""
-        <tr>
-            <td class="code-font">{p['id']}</td>
-            <td><div class="scrollable-text">{escape_html(p['desc'])}</div></td>
-            <td><span class="badge {badge_class}">{p['tier']}</span></td>
-            <td class="text-right">{p['catch_rate']}</td>
-        </tr>
-        """
-
     test_rows = ""
     total_tests = len(sorted_tests)
     total_t1_unreviewed = 0
     total_t2_unreviewed = 0
     fully_triaged_tests = 0
-    fsi_sum = 0  # Re-added the accumulator
+    fsi_sum = 0
 
     for test_name, stats in sorted_tests:
         hit = stats['hit']
         caught = stats['caught']
         missed = hit - caught
-        fsi = (missed / hit * 100) if hit > 0 else 0  # Re-added FSI calculation
-        fsi_sum += fsi  # Accumulate the FSI
+        fsi = (missed / hit * 100) if hit > 0 else 0
+        fsi_sum += fsi
         safe_id = sanitize_id(test_name)
 
         t1 = []
@@ -266,7 +316,6 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
         t3 = []
         t_covered = []
 
-        # Partition probes with Global Awareness
         for p in stats['probes']:
             if p['tier'] == 3:
                 t3.append(p)
@@ -294,7 +343,7 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
 
         inner_html = f"<div class='test-details'>"
 
-        # 1. Survived (Tier 1) - Default Expanded
+        # 1. Survived (Tier 1)
         if t1:
             inner_html += f"""
             <div class='details-section'>
@@ -314,9 +363,9 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                             <div class='probe-meta'>
                                 <span class='probe-id'>Probe {p['id']}</span>
                                 <div class='action-group'>
-                                    <button class='btn-small' onclick="openCodeModal('{test_class}', '{test_method}', '{fqcn}', '{m_name}')">View Source Code</button>
-                                    <a href='{target_link}' class='btn-small'>Open Target</a>
-                                    <a href='{test_link}' class='btn-small'>Open Test</a>
+                                    <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(test_class)}', '{escape_js(test_method)}', '{escape_js(fqcn)}', '{escape_js(m_name)}')">View Source Code</button>
+                                    <a href="{target_link}" class="btn-small">Open Target</a>
+                                    <a href="{test_link}" class="btn-small">Open Test</a>
                                 </div>
                             </div>
                             <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
@@ -335,7 +384,7 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                         """
             inner_html += "</ul></div></div>"
 
-        # 2. Execution Errors (Tier 2) - Default Expanded
+        # 2. Execution Errors (Tier 2)
         if t2:
             inner_html += f"""
             <div class='details-section'>
@@ -355,9 +404,9 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                             <div class='probe-meta'>
                                 <span class='probe-id'>Probe {p['id']}</span>
                                 <div class='action-group'>
-                                    <button class='btn-small' onclick="openCodeModal('{test_class}', '{test_method}', '{fqcn}', '{m_name}')">View Source Code</button>
-                                    <a href='{target_link}' class='btn-small'>Open Target</a>
-                                    <a href='{test_link}' class='btn-small'>Open Test</a>
+                                    <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(test_class)}', '{escape_js(test_method)}', '{escape_js(fqcn)}', '{escape_js(m_name)}')">View Source Code</button>
+                                    <a href="{target_link}" class="btn-small">Open Target</a>
+                                    <a href="{test_link}" class="btn-small">Open Test</a>
                                 </div>
                             </div>
                             <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
@@ -371,7 +420,7 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                         """
             inner_html += "</ul></div></div>"
 
-        # 3. Action Required (Cascaded) - Default Hidden (Orange styling)
+        # 3. Action Required (Cascaded)
         inner_html += f"""
         <div class='details-section' id='cascaded-section-{safe_id}' style='display: none;'>
             <div class='details-title text-orange accordion-header' style='border-bottom-color: #fdba74;' onclick="toggleAccordion('content-cascaded-{safe_id}', 'icon-cascaded-{safe_id}')">
@@ -383,12 +432,12 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
         </div>
         """
 
-        # 4. Covered by Another Test - Default Collapsed
+        # 4. Covered by Another Test
         if t_covered:
             inner_html += f"""
             <div class='details-section'>
                 <div class='details-title text-info accordion-header' onclick="toggleAccordion('content-tc-{safe_id}', 'icon-tc-{safe_id}')">
-                    <span><span id='icon-tc-{safe_id}' class='accordion-icon'>▶</span> Covered by Another Test [{len(t_covered)} Probes]</span>
+                    <span><span id='icon-tc-{safe_id}' class='accordion-icon'>▶</span> Covered by Another Test <span id='count-tc-{safe_id}'>[{len(t_covered)} Probes]</span></span>
                 </div>
                 <div id='content-tc-{safe_id}' style='display: none;'>
                     <ul class='details-list'>
@@ -407,26 +456,26 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                             <div class='probe-meta'>
                                 <span class='probe-id'>Probe {p['id']}</span>
                                 <div class='action-group'>
-                                    <button class='btn-small' onclick="openCodeModal('{test_class}', '{test_method}', '{fqcn}', '{m_name}')">View Source Code</button>
-                                    <a href='{target_link}' class='btn-small'>Open Target</a>
-                                    <a href='{test_link}' class='btn-small'>Open Test</a>
+                                    <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(test_class)}', '{escape_js(test_method)}', '{escape_js(fqcn)}', '{escape_js(m_name)}')">View Source Code</button>
+                                    <a href="{target_link}" class="btn-small">Open Target</a>
+                                    <a href="{test_link}" class="btn-small">Open Test</a>
                                 </div>
                             </div>
                             <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
                             <div class='perturb-action'>{action_disp}</div>
                             <div class='saviour-box'>
-                                <span class='text-muted font-medium'>Safely caught by:</span> <a href='#' onclick="openCodeModal('{saviour_class}', '{saviour_method}', null, null); return false;" class='saviour-link'>{escape_html(saviour_test)}</a>
+                                <span class='text-muted font-medium'>Safely caught by:</span> <a href="#" onclick="event.stopPropagation(); openCodeModal('{escape_js(saviour_class)}', '{escape_js(saviour_method)}', null, null); return false;" class="saviour-link">{escape_html(saviour_test)}</a>
                             </div>
                         </li>
                         """
             inner_html += "</ul></div></div>"
 
-        # 5. Semantic Failures (Tier 3) - Default Collapsed
+        # 5. Semantic Failures
         if t3:
             inner_html += f"""
             <div class='details-section'>
                 <div class='details-title text-success accordion-header' onclick="toggleAccordion('content-t3-{safe_id}', 'icon-t3-{safe_id}')">
-                    <span><span id='icon-t3-{safe_id}' class='accordion-icon'>▶</span> Semantic Failures (Clean Kills) [{len(t3)} Probes]</span>
+                    <span><span id='icon-t3-{safe_id}' class='accordion-icon'>▶</span> Semantic Failures (Clean Kills) <span id='count-t3-{safe_id}'>[{len(t3)} Probes]</span></span>
                 </div>
                 <div id='content-t3-{safe_id}' style='display: none;'>
                     <ul class='details-list'>
@@ -441,9 +490,9 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                             <div class='probe-meta'>
                                 <span class='probe-id'>Probe {p['id']}</span>
                                 <div class='action-group'>
-                                    <button class='btn-small' onclick="openCodeModal('{test_class}', '{test_method}', '{fqcn}', '{m_name}')">View Source Code</button>
-                                    <a href='{target_link}' class='btn-small'>Open Target</a>
-                                    <a href='{test_link}' class='btn-small'>Open Test</a>
+                                    <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(test_class)}', '{escape_js(test_method)}', '{escape_js(fqcn)}', '{escape_js(m_name)}')">View Source Code</button>
+                                    <a href="{target_link}" class="btn-small">Open Target</a>
+                                    <a href="{test_link}" class="btn-small">Open Test</a>
                                 </div>
                             </div>
                             <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
@@ -452,7 +501,7 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                         """
             inner_html += "</ul></div></div>"
 
-        # 6. Filtered Noise Archive - Default Collapsed
+        # 6. Filtered Noise Archive
         inner_html += f"""
         <div class='details-section' id='noise-section-{safe_id}' style='display: none;'>
             <div class='details-title text-muted accordion-header' onclick="toggleAccordion('content-noise-{safe_id}', 'icon-noise-{safe_id}')">
@@ -528,14 +577,7 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
             .metrics-container {{ display: none; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 32px; }}
             .metrics-container.active {{ display: grid; }}
 
-            .metric-card {{ 
-                background: #ffffff; 
-                border: 1px solid #e2e8f0; 
-                border-radius: 12px; 
-                padding: 24px; 
-                text-align: center; 
-                box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05); 
-            }}
+            .metric-card {{ background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; text-align: center; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05); }}
             .metric-value {{ font-size: 36px; font-weight: 700; color: var(--text-main); line-height: 1.1; margin-bottom: 4px; letter-spacing: -0.02em; }}
             .metric-label {{ font-size: 13px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }}
 
@@ -561,14 +603,7 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
             .code-font {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 600; color: var(--text-main); }}
             .p-0 {{ padding: 0 !important; }}
 
-            .scrollable-text {{ 
-                display: block; 
-                width: 100%; 
-                overflow-x: auto; 
-                white-space: nowrap; 
-                padding-bottom: 4px; 
-                scrollbar-width: none; 
-            }}
+            .scrollable-text {{ display: block; width: 100%; overflow-x: auto; white-space: nowrap; padding-bottom: 4px; scrollbar-width: none; }}
             .scrollable-text::-webkit-scrollbar {{ display: none; }}
             .scrollable-text:hover::-webkit-scrollbar {{ display: block; height: 6px; }}
             .scrollable-text::-webkit-scrollbar-thumb {{ background: #cbd5e1; border-radius: 3px; }}
@@ -577,22 +612,21 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
             .badge-danger {{ background-color: var(--danger-bg); color: var(--danger-text); }}
             .badge-warning {{ background-color: var(--warning-bg); color: var(--warning-text); }}
             .badge-success {{ background-color: var(--success-bg); color: var(--success-text); }}
+            .badge-primary {{ background-color: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }}
             .text-danger {{ color: var(--danger); }}
             .text-warning {{ color: var(--warning); }}
             .text-success {{ color: var(--success); }}
             .text-info {{ color: var(--info); }}
             .text-orange {{ color: var(--orange); }}
             .text-muted {{ color: var(--text-muted); }}
+            .text-main {{ color: var(--text-main); }}
 
             .clickable-row {{ cursor: pointer; transition: background-color 0.2s; }}
             .clickable-row:hover {{ background-color: #f1f5f9; }}
             .expand-hint {{ font-size: 12px; color: var(--text-muted); font-weight: 600; transition: color 0.2s; }}
             .clickable-row:hover .expand-hint {{ color: var(--primary); }}
 
-            .details-row {{ 
-                background-color: #f8fafc; 
-                box-shadow: inset 0 4px 8px -4px rgba(0, 0, 0, 0.05), inset 0 -4px 8px -4px rgba(0, 0, 0, 0.05); 
-            }} 
+            .details-row {{ background-color: #f8fafc; box-shadow: inset 0 4px 8px -4px rgba(0, 0, 0, 0.05), inset 0 -4px 8px -4px rgba(0, 0, 0, 0.05); }} 
             .test-details {{ padding: 32px 24px; }}
 
             .details-section {{ margin-bottom: 32px; }}
@@ -605,20 +639,8 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
 
             .details-list {{ list-style: none; padding: 0; margin: 16px 0 0 0; display: flex; flex-direction: column; gap: 16px; }}
 
-            .probe-item {{ 
-                background: #ffffff; 
-                border: 1px solid #e2e8f0; 
-                border-left: 4px solid #cbd5e1;
-                border-radius: 8px; 
-                padding: 20px; 
-                box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px -2px rgba(0, 0, 0, 0.02); 
-                display: flex;
-                flex-direction: column;
-                transition: all 0.2s ease; 
-            }}
-            .probe-item:hover {{
-                box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -4px rgba(0, 0, 0, 0.03);
-            }}
+            .probe-item {{ background: #ffffff; border: 1px solid #e2e8f0; border-left: 4px solid #cbd5e1; border-radius: 8px; padding: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px -2px rgba(0, 0, 0, 0.02); display: flex; flex-direction: column; transition: all 0.2s ease; }}
+            .probe-item:hover {{ box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -4px rgba(0, 0, 0, 0.03); }}
 
             .probe-meta {{ display: flex; align-items: center; gap: 12px; margin-bottom: 16px; font-size: 13px; }}
             .probe-id {{ font-weight: 700; color: var(--text-main); font-size: 15px; }}
@@ -634,35 +656,13 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
 
             .action-group {{ display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: nowrap; }}
 
-            .btn-small {{ 
-                display: inline-flex; 
-                align-items: center; 
-                background-color: #ffffff; 
-                color: var(--text-main); 
-                border: 1px solid #cbd5e1; 
-                text-decoration: none; 
-                padding: 6px 12px; 
-                border-radius: 6px; 
-                font-size: 12px; 
-                font-weight: 600; 
-                transition: all 0.2s ease-in-out; 
-                cursor: pointer; 
-                box-shadow: 0 1px 2px rgba(0,0,0,0.02); 
-                white-space: nowrap; 
-            }}
+            .btn-small {{ display: inline-flex; align-items: center; background-color: #ffffff; color: var(--text-main); border: 1px solid #cbd5e1; text-decoration: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; transition: all 0.2s ease-in-out; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,0.02); white-space: nowrap; }}
             .btn-small:hover {{ background-color: #f1f5f9; border-color: #94a3b8; color: var(--primary); text-decoration: none; }}
 
-            .triage-actions {{ 
-                margin: 20px -20px -20px -20px; 
-                padding: 14px 20px; 
-                background-color: #f8fafc; 
-                border-top: 1px solid #e2e8f0; 
-                border-radius: 0 0 8px 8px;
-                display: flex; 
-                gap: 8px; 
-                flex-wrap: wrap; 
-                align-items: center;
-            }}
+            .btn-primary {{ display: inline-flex; align-items: center; background-color: var(--primary); color: #ffffff; border: none; text-decoration: none; padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; transition: all 0.2s ease-in-out; cursor: pointer; box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3); white-space: nowrap; }}
+            .btn-primary:hover {{ background-color: #2563eb; color: #ffffff; text-decoration: none; }}
+
+            .triage-actions {{ margin: 20px -20px -20px -20px; padding: 14px 20px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; border-radius: 0 0 8px 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
             .btn-triage {{ padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.2s; border: 1px solid transparent; background: transparent; }}
             .btn-action {{ color: var(--danger); border-color: #fca5a5; background: #ffffff; box-shadow: 0 1px 2px rgba(0,0,0,0.02); }}
             .btn-action:hover {{ background: var(--danger-bg); border-color: var(--danger); }}
@@ -703,6 +703,7 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
             mark.scroll-target {{ background-color: #fef08a; color: #854d0e; border-radius: 3px; padding: 2px 4px; font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }}
         </style>
         <script>
+            const fileCache = {file_cache_json};
             window.initialT1Count = {total_t1_unreviewed};
             window.initialT2Count = {total_t2_unreviewed};
             window.totalTestCount = {total_tests};
@@ -760,7 +761,7 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                 if (decisionType === 'action') {{
                     probeEl.classList.add('action-required');
 
-                    // SMART CASCADING: Globally flag this exact bug across ALL tests
+                    // SMART CASCADING across Tests
                     const otherProbes = document.querySelectorAll(`li[data-probe-id="${{probeId}}"][data-state="unreviewed"]`);
                     otherProbes.forEach(otherProbeEl => {{
                         if (otherProbeEl.id !== probeEl.id) {{
@@ -780,6 +781,13 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                             updateAccordionCounts(otherTestId);
                         }}
                     }});
+
+                    // CROSS-TAB SYNC: Update the Vulnerability Ledger
+                    const ledgerBadge = document.getElementById(`ledger-badge-${{probeId}}`);
+                    if (ledgerBadge) {{
+                        ledgerBadge.className = 'badge badge-primary';
+                        ledgerBadge.innerText = 'Pending Fix (Claimed)';
+                    }}
 
                 }} else if (decisionType === 'noise') {{
                     probeEl.classList.add('noise-item');
@@ -854,6 +862,26 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                 document.getElementById('ui-oracles').innerText = confirmedBugs;
                 document.getElementById('ui-triaged-tests').innerText = fullyTriaged + ' / ' + window.totalTestCount;
             }}
+
+            function openCodeModal(class1, method1, class2, method2) {{
+                const targetPane = document.getElementById('modalTargetPane');
+
+                if (class2 && class2 !== 'null') {{
+                    document.getElementById('modalTestTitle').innerHTML = 'Test Class <span class="pane-subtitle">— ' + class1 + '.' + method1 + '()</span>';
+                    document.getElementById('modalTargetTitle').innerHTML = 'Target Class <span class="pane-subtitle">— ' + class2 + '.' + method2 + '()</span>';
+
+                    targetPane.style.display = 'flex';
+                    renderAndHighlight('modalTargetCode', fileCache[class2], method2);
+                }} else {{
+                    document.getElementById('modalTestTitle').innerHTML = 'Source Code <span class="pane-subtitle">— ' + class1 + '.' + method1 + '()</span>';
+                    targetPane.style.display = 'none';
+                }}
+
+                renderAndHighlight('modalTestCode', fileCache[class1], method1);
+
+                document.getElementById('codeModal').style.display = "block";
+                document.body.style.overflow = "hidden";
+            }}
         </script>
     </head>
     <body>
@@ -867,7 +895,7 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                 </div>
                 <div class="metric-card">
                     <div class="metric-value" id="ui-t2-inbox">{total_t2_unreviewed} / {total_t2_unreviewed}</div>
-                    <div class="metric-label">Execution Crashes (Robustness Audit)</div>
+                    <div class="metric-label">Execution Crashes (Robustness)</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-value" id="ui-oracles">0</div>
@@ -900,7 +928,7 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
 
             <div class="tabs">
                 <div class="tab active" onclick="switchTab('test-view')">Test Quality (Test-Centric)</div>
-                <div class="tab" onclick="switchTab('probe-view')">Code Health (Probe-Centric)</div>
+                <div class="tab" onclick="switchTab('probe-view')">Vulnerability Ledger (Probe-Centric)</div>
             </div>
 
             <div id="test-view" class="tab-content active">
@@ -926,21 +954,22 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
 
             <div id="probe-view" class="tab-content">
                 <div class="tab-header">
-                    <h2>Probe Vulnerability List</h2>
-                    <p>Shows how the system responded to each Perturbation point.</p>
+                    <h2>Vulnerability Ledger (Probe-Centric)</h2>
+                    <p>The global status of every injected fault. Discover completely unprotected probes to write brand new unit tests.</p>
                 </div>
                 <div class="table-container">
                     <table>
                         <thead>
                             <tr>
                                 <th style="width: 100px;">Probe ID</th>
-                                <th>Description</th>
-                                <th style="width: 180px;">Resolution Tier</th>
-                                <th class="text-right" style="width: 160px;">Test Catch Rate</th>
+                                <th style="width: 250px;">Target Location</th>
+                                <th>The Mutation</th>
+                                <th class="text-center" style="width: 120px;">Footprint</th>
+                                <th class="text-right" style="width: 180px;">Global Status</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {probe_rows}
+                            {ledger_rows}
                         </tbody>
                     </table>
                 </div>
@@ -956,11 +985,11 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
                 </div>
                 <div class="split-view">
                     <div class="split-pane" id="modalTestPane">
-                        <h3>Test Class <span id="modalTestTitle" class="pane-subtitle"></span></h3>
+                        <h3 id="modalTestTitle">Source Code</h3>
                         <div id="modalTestCode" class="code-container"></div>
                     </div>
                     <div class="split-pane" id="modalTargetPane">
-                        <h3>Target Class <span id="modalTargetTitle" class="pane-subtitle"></span></h3>
+                        <h3 id="modalTargetTitle">Target Class</h3>
                         <div id="modalTargetCode" class="code-container"></div>
                     </div>
                 </div>
@@ -970,26 +999,6 @@ def generate_dashboard(project_dir, probes_data, test_stats, metrics, global_tie
         <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/languages/java.min.js"></script>
         <script>
-            const fileCache = {file_cache_json};
-
-            function openCodeModal(testClass, testMethod, targetClass, targetMethod) {{
-                document.getElementById('modalTestTitle').innerText = '— ' + testClass + '.' + testMethod + '()';
-
-                const targetPane = document.getElementById('modalTargetPane');
-                if (targetClass) {{
-                    targetPane.style.display = 'flex';
-                    document.getElementById('modalTargetTitle').innerText = '— ' + targetClass + '.' + targetMethod + '()';
-                    renderAndHighlight('modalTargetCode', fileCache[targetClass], targetMethod);
-                }} else {{
-                    targetPane.style.display = 'none';
-                }}
-
-                renderAndHighlight('modalTestCode', fileCache[testClass], testMethod);
-
-                document.getElementById('codeModal').style.display = "block";
-                document.body.style.overflow = "hidden";
-            }}
-
             function closeModal() {{
                 document.getElementById('codeModal').style.display = "none";
                 document.body.style.overflow = "auto";
@@ -1062,8 +1071,8 @@ def main():
     global_tests_passed = 0
     global_tests_failed = 0
 
-    dashboard_probes = []
     dashboard_tests = defaultdict(lambda: {'hit': 0, 'caught': 0, 'probes': []})
+    dashboard_ledger = []
 
     global_tier3_probes = {}
 
@@ -1076,31 +1085,29 @@ def main():
             skipped_count += 1
             continue
 
+        mod, fqcn, m_name = parse_probe(probe_desc)
+
         test_results_dict, p_count, f_count, is_timeout, actions_map = evaluate(pid, tests, project_dir, agent_jar,
                                                                                 target_package, dynamic_timeout)
 
         for t in tests:
             dashboard_tests[t]['hit'] += 1
 
-        tier_assigned = "Unknown"
+        best_tier = 1
 
         if is_timeout:
             timeouts_count += 1
             tier2_error += 1
             global_tests_failed += len(tests)
-            tier_assigned = "Tier 2 (Timeout)"
+            best_tier = 2
+
             for t in tests:
                 dashboard_tests[t]['caught'] += 1
                 dashboard_tests[t]['probes'].append({
                     'id': pid, 'desc': probe_desc, 'status': 'FAIL (TIMEOUT)', 'tier': 2,
                     'actions': ['Infinite Loop / Timeout']
                 })
-
-            dashboard_probes.append(
-                {'id': pid, 'desc': probe_desc, 'tier': tier_assigned, 'catch_rate': "100% (Timeout)"})
-            continue
-
-        if test_results_dict:
+        elif test_results_dict:
             global_tests_passed += p_count
             global_tests_failed += f_count
 
@@ -1132,20 +1139,27 @@ def main():
 
             if has_assert:
                 tier3_assert += 1
-                tier_assigned = "Tier 3 (Assert)"
+                best_tier = 3
             elif has_exception:
                 tier2_error += 1
-                tier_assigned = "Tier 2 (Exception)"
+                best_tier = 2
             elif has_pass:
                 tier1_survived += 1
-                tier_assigned = "Tier 1 (Survived)"
+                best_tier = 1
             else:
                 unknown_errors += 1
-
-            dashboard_probes.append(
-                {'id': pid, 'desc': probe_desc, 'tier': tier_assigned, 'catch_rate': f"{f_count}/{p_count + f_count}"})
         else:
             errors_count += 1
+
+        if not is_timeout and test_results_dict:
+            dashboard_ledger.append({
+                'id': pid,
+                'desc': probe_desc,
+                'fqcn': fqcn,
+                'method': m_name,
+                'tests': sorted(list(tests)),
+                'tier': best_tier
+            })
 
     total_duration = time.time() - script_start
     total_scored = tier1_survived + tier2_error + tier3_assert
@@ -1188,7 +1202,7 @@ def main():
         'brittle': tier2_error
     }
 
-    html_file = generate_dashboard(project_dir, dashboard_probes, dashboard_tests, metrics, global_tier3_probes)
+    html_file = generate_dashboard(project_dir, dashboard_ledger, dashboard_tests, metrics, global_tier3_probes)
     print(f"\nDashboard generated at: {html_file}")
 
     webbrowser.open('file://' + os.path.realpath(html_file))
