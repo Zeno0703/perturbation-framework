@@ -213,7 +213,7 @@ def escape_js(text):
     return str(text).replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"')
 
 
-def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, global_tier3_probes):
+def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_stats, metrics, global_tier3_probes):
     html_path = os.path.join(project_dir, OUT_DIR, "dashboard.html")
 
     file_cache = {}
@@ -231,13 +231,17 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
         if p['fqcn'] and p['fqcn'] != "unknown":
             needed_files.add((p['fqcn'], False))
 
+    for method_key, stats in dashboard_methods.items():
+        if stats['fqcn'] and stats['fqcn'] != "unknown":
+            needed_files.add((stats['fqcn'], False))
+
     for fqcn, is_test in needed_files:
         file_cache[fqcn] = read_java_file(project_dir, fqcn, is_test)
 
     file_cache_json = json.dumps(file_cache).replace("</", "<\\/")
 
     # ---------------------------------------------------------
-    # Generate Probe-Centric (Ledger) Rows via Accordions + Tables
+    # HTML Builders for Ledger (Probe-Centric - Tab 3)
     # ---------------------------------------------------------
     def build_ledger_row(p):
         class_name = p['fqcn'].split('.')[-1] if p['fqcn'] != 'unknown' else 'Unknown'
@@ -245,9 +249,6 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
         if p['tier'] == 1:
             badge_class = "badge-danger"
             status_text = "Globally Unprotected"
-        elif p['tier'] == 2:
-            badge_class = "badge-warning"
-            status_text = "Execution Crash"
         else:
             badge_class = "badge-success"
             status_text = "Globally Caught"
@@ -305,14 +306,11 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
         """
 
     ledger_t1 = []
-    ledger_t2 = []
     ledger_t3 = []
 
     for p in sorted(dashboard_ledger, key=lambda x: -len(x['tests'])):
         if p['tier'] == 1:
             ledger_t1.append(p)
-        elif p['tier'] == 2:
-            ledger_t2.append(p)
         elif p['tier'] == 3:
             ledger_t3.append(p)
 
@@ -323,7 +321,7 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
         ledger_html += f"""
         <div class='details-section'>
             <div class='details-title text-danger accordion-header' onclick="toggleAccordion('content-ledger-t1', 'icon-ledger-t1')">
-                <span><span id='icon-ledger-t1' class='accordion-icon'>▼</span> Globally Unprotected (Critical) <span id='count-ledger-t1'>[{len(ledger_t1)} Probes]</span></span>
+                <span><span id='icon-ledger-t1' class='accordion-icon'>▼</span> Globally Unprotected <span id='count-ledger-t1'>[{len(ledger_t1)} Probes]</span></span>
             </div>
             <div id='content-ledger-t1' style='display: block;'>
                 {build_ledger_table(rows_html, 'tbody-ledger-t1')}
@@ -334,7 +332,7 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
     ledger_html += f"""
     <div class='details-section' id='section-ledger-pending' style='display: none;'>
         <div class='details-title text-primary accordion-header' onclick="toggleAccordion('content-ledger-pending', 'icon-ledger-pending')">
-            <span><span id='icon-ledger-pending' class='accordion-icon'>▼</span> Pending Fix (Claimed in Test View) <span id='count-ledger-pending'>[0 Probes]</span></span>
+            <span><span id='icon-ledger-pending' class='accordion-icon'>▼</span> Pending Fix <span id='count-ledger-pending'>[0 Probes]</span></span>
         </div>
         <div id='content-ledger-pending' style='display: block;'>
             {build_ledger_table('', 'tbody-ledger-pending')}
@@ -342,25 +340,12 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
     </div>
     """
 
-    if ledger_t2:
-        rows_html = "".join([build_ledger_row(p) for p in ledger_t2])
-        ledger_html += f"""
-        <div class='details-section'>
-            <div class='details-title text-warning accordion-header' onclick="toggleAccordion('content-ledger-t2', 'icon-ledger-t2')">
-                <span><span id='icon-ledger-t2' class='accordion-icon'>▶</span> Execution Crashes (Dirty Kills) <span id='count-ledger-t2'>[{len(ledger_t2)} Probes]</span></span>
-            </div>
-            <div id='content-ledger-t2' style='display: none;'>
-                {build_ledger_table(rows_html, 'tbody-ledger-t2')}
-            </div>
-        </div>
-        """
-
     if ledger_t3:
         rows_html = "".join([build_ledger_row(p) for p in ledger_t3])
         ledger_html += f"""
         <div class='details-section'>
             <div class='details-title text-success accordion-header' onclick="toggleAccordion('content-ledger-t3', 'icon-ledger-t3')">
-                <span><span id='icon-ledger-t3' class='accordion-icon'>▶</span> Globally Caught (Secured) <span id='count-ledger-t3'>[{len(ledger_t3)} Probes]</span></span>
+                <span><span id='icon-ledger-t3' class='accordion-icon'>▶</span> Globally Caught <span id='count-ledger-t3'>[{len(ledger_t3)} Probes]</span></span>
             </div>
             <div id='content-ledger-t3' style='display: none;'>
                 {build_ledger_table(rows_html, 'tbody-ledger-t3')}
@@ -371,7 +356,7 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
     ledger_html += f"""
     <div class='details-section' id='section-ledger-discarded' style='display: none;'>
         <div class='details-title text-muted accordion-header' onclick="toggleAccordion('content-ledger-discarded', 'icon-ledger-discarded')">
-            <span><span id='icon-ledger-discarded' class='accordion-icon'>▶</span> Discarded Noise (Equivalent / False Positives) <span id='count-ledger-discarded'>[0 Probes]</span></span>
+            <span><span id='icon-ledger-discarded' class='accordion-icon'>▶</span> Discarded Noise <span id='count-ledger-discarded'>[0 Probes]</span></span>
         </div>
         <div id='content-ledger-discarded' style='display: none;'>
             {build_ledger_table('', 'tbody-ledger-discarded')}
@@ -380,34 +365,17 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
     """
 
     # ---------------------------------------------------------
-    # Generate Test-Centric Rows
+    # Generate Test-Centric Rows (Tab 1)
     # ---------------------------------------------------------
-    sorted_tests = sorted(
-        test_stats.items(),
-        key=lambda x: (x[1]['hit'] - x[1]['caught'], x[1]['hit']),
-        reverse=True
-    )
+    valid_sorted_tests = []
 
-    test_rows = ""
-    total_tests = len(sorted_tests)
-    total_t1_unreviewed = 0
-    total_t2_unreviewed = 0
-    fully_triaged_tests = 0
-    fsi_sum = 0
-
-    for test_name, stats in sorted_tests:
-        hit = stats['hit']
-        caught = stats['caught']
-        missed = hit - caught
-        fsi = (missed / hit * 100) if hit > 0 else 0
-        fsi_sum += fsi
-        safe_id = sanitize_id(test_name)
-
+    for test_name, stats in sorted(test_stats.items(), key=lambda x: (x[1]['hit'] - x[1]['caught'], x[1]['hit']),
+                                   reverse=True):
         t1 = []
-        t2 = []
         t3 = []
         t_covered = []
 
+        # Strictly filter out Tier 2
         for p in stats['probes']:
             if p['tier'] == 3:
                 t3.append(p)
@@ -416,12 +384,22 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                 t_covered.append(p)
             elif p['tier'] == 1:
                 t1.append(p)
-            elif p['tier'] == 2:
-                t2.append(p)
 
-        unreviewed_count = len(t1) + len(t2)
-        total_t1_unreviewed += len(t1)
-        total_t2_unreviewed += len(t2)
+        semantic_hits = len(t1) + len(t3) + len(t_covered)
+        if semantic_hits == 0:
+            continue  # Skip tests that only hit exceptions
+
+        valid_sorted_tests.append((test_name, stats, t1, t3, t_covered, semantic_hits))
+
+    total_tests = len(valid_sorted_tests)
+    total_t1_unreviewed = 0
+    fully_triaged_tests = 0
+    test_rows = ""
+
+    for test_name, stats, t1, t3, t_covered, semantic_hits in valid_sorted_tests:
+        safe_id = sanitize_id(test_name)
+        unreviewed_count = len(t1)
+        total_t1_unreviewed += unreviewed_count
 
         if unreviewed_count == 0:
             badge_html = f'<span class="status-pill clear">[ Fully Triaged & Clear ]</span>'
@@ -432,6 +410,9 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
         test_class = test_name.split('#')[0]
         test_method = test_name.split('#')[1] if '#' in test_name else "unknown"
         test_link = to_idea_link(project_dir, test_class, is_test=True)
+
+        display_test_class = test_class.split('.')[-1]
+        display_test_name = f"{display_test_class}.{test_method}()" if test_method != "unknown" else display_test_class
 
         inner_html = f"<div class='test-details'>"
 
@@ -467,45 +448,9 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                 inner_html += f"<div class='probe-warning'>{warn}</div>"
                 inner_html += f"""
                             <div class='triage-actions' id='actions-{safe_id}-{p['id']}'>
-                                <button class='btn-triage btn-action' title='This test should catch this. It failed because my inputs are weak (Logical Masking) or my assertions are missing (Missing Oracle).' onclick="triage('{safe_id}', '{p['id']}', 'action', 'Weak Test')">Weak Test</button>
-                                <button class='btn-triage btn-noise' title='This perturbation is inherently unobservable (e.g., Math.abs()). No input will ever catch this. It is a false positive generated by the tool.' onclick="triage('{safe_id}', '{p['id']}', 'equivalent', 'Equivalent')">Equivalent</button>
-                                <button class='btn-triage btn-noise' title='This specific test is not the right place to catch this. (Covers both Architectural Scope and Test Setup Masking).' onclick="triage('{safe_id}', '{p['id']}', 'noise', 'Out of Scope')">Out of Scope</button>
-                            </div>
-                        </li>
-                        """
-            inner_html += "</ul></div></div>"
-
-        # 2. Execution Errors (Tier 2)
-        if t2:
-            inner_html += f"""
-            <div class='details-section'>
-                <div class='details-title text-warning accordion-header' onclick="toggleAccordion('content-t2-{safe_id}', 'icon-t2-{safe_id}')">
-                    <span><span id='icon-t2-{safe_id}' class='accordion-icon'>▼</span> Execution Errors (Dirty Kills) <span id='count-t2-{safe_id}'>[{len(t2)} Probes]</span></span>
-                </div>
-                <div id='content-t2-{safe_id}' style='display: block;'>
-                    <ul class='details-list' id='list-t2-{safe_id}'>
-            """
-            for p in t2:
-                mod, fqcn, m_name = parse_probe(p['desc'])
-                target_link = to_idea_link(project_dir, fqcn, is_test=False)
-                action_disp = build_action_trace(p)
-
-                inner_html += f"""
-                        <li id='probe-{safe_id}-{p['id']}' data-probe-id='{p['id']}' data-test-id='{safe_id}' data-tier='2' data-state='unreviewed' class='probe-item' style='border-left-color: var(--warning);'>
-                            <div class='probe-meta'>
-                                <span class='probe-id'>Probe {p['id']}</span>
-                                <div class='action-group'>
-                                    <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(test_class)}', '{escape_js(test_method)}', '{escape_js(fqcn)}', '{escape_js(m_name)}')">View Source Code</button>
-                                    <a href="{target_link}" class="btn-small">Open Target</a>
-                                    <a href="{test_link}" class="btn-small">Open Test</a>
-                                </div>
-                            </div>
-                            <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
-                            <div class='perturb-action'>{action_disp}</div>
-
-                            <div class='triage-actions' id='actions-{safe_id}-{p['id']}'>
-                                <button class='btn-triage btn-action' title='This error reveals brittle code that lacks defensive checks.' onclick="triage('{safe_id}', '{p['id']}', 'action', 'Brittle Code')">Brittle Code</button>
-                                <button class='btn-triage btn-noise' title='The injected state is mathematically impossible in production, so this crash is irrelevant.' onclick="triage('{safe_id}', '{p['id']}', 'noise', 'Impossible State')">Impossible State</button>
+                                <button class='btn-triage btn-action' title='This test should catch this. It failed because my inputs are weak (Logical Masking) or my assertions are missing (Missing Oracle).' onclick="triageTest('{safe_id}', '{p['id']}', 'action', 'Weak Test')">Weak Test</button>
+                                <button class='btn-triage btn-noise' title='This perturbation is inherently unobservable (e.g., Math.abs()). No input will ever catch this. It is a false positive generated by the tool.' onclick="triageTest('{safe_id}', '{p['id']}', 'equivalent', 'Equivalent')">Equivalent</button>
+                                <button class='btn-triage btn-noise' title='This specific test is not the right place to catch this. (Covers both Architectural Scope and Test Setup Masking).' onclick="triageTest('{safe_id}', '{p['id']}', 'noise', 'Out of Scope')">Out of Scope</button>
                             </div>
                         </li>
                         """
@@ -596,7 +541,7 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
         inner_html += f"""
         <div class='details-section' id='noise-section-{safe_id}' style='display: none;'>
             <div class='details-title text-muted accordion-header' onclick="toggleAccordion('content-noise-{safe_id}', 'icon-noise-{safe_id}')">
-                <span><span id='icon-noise-{safe_id}' class='accordion-icon'>▶</span> Filtered Noise (The Archive) <span id='count-noise-{safe_id}'>[0 Probes]</span></span>
+                <span><span id='icon-noise-{safe_id}' class='accordion-icon'>▶</span> Filtered Noise <span id='count-noise-{safe_id}'>[0 Probes]</span></span>
             </div>
             <div id='content-noise-{safe_id}' style='display: none;'>
                 <ul id='list-noise-{safe_id}' class='details-list'></ul>
@@ -609,11 +554,11 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
         <tr class="clickable-row" onclick="toggleRow(event, 'desc-{safe_id}')">
             <td class="font-medium text-main">
                 <div style="display: flex; justify-content: space-between; align-items: center; gap: 20px;">
-                    <div class="scrollable-text" style="font-weight: 600;">{test_name}</div>
+                    <div class="scrollable-text code-font" style="font-weight: 600;">{display_test_name}</div>
                     <span class="expand-hint" style="flex-shrink: 0;">Show details ▼</span>
                 </div>
             </td>
-            <td class="text-center">{hit}</td>
+            <td class="text-center">{semantic_hits}</td>
             <td id="badge-{safe_id}" class="text-right">{badge_html}</td>
         </tr>
         <tr id="desc-{safe_id}" class="details-row" style="display: none;">
@@ -621,7 +566,87 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
         </tr>
         """
 
-    avg_fsi = fsi_sum / total_tests if total_tests > 0 else 0
+    # ---------------------------------------------------------
+    # Generate Code-Centric Rows (Tab 2)
+    # ---------------------------------------------------------
+    code_rows = ""
+    valid_methods_count = 0
+    total_t2_unreviewed = 0
+
+    for method_key, stats in sorted(dashboard_methods.items(), key=lambda x: -len(x[1]['probes'])):
+        if not stats['probes']:
+            continue
+
+        valid_methods_count += 1
+        safe_m_id = sanitize_id(method_key)
+        m_fqcn = stats['fqcn']
+        m_name = stats['method']
+        c_name = m_fqcn.split('.')[-1] if m_fqcn != 'unknown' else 'Unknown'
+        total_t2_unreviewed += len(stats['probes'])
+
+        inner_code_html = f"""
+        <div class='details-section'>
+            <div class='details-title text-warning accordion-header' onclick="toggleAccordion('content-code-t2-{safe_m_id}', 'icon-code-t2-{safe_m_id}')">
+                <span><span id='icon-code-t2-{safe_m_id}' class='accordion-icon'>▼</span> Execution Crashes <span id='count-code-t2-{safe_m_id}'>[{len(stats['probes'])} Probes]</span></span>
+            </div>
+            <div id='content-code-t2-{safe_m_id}' style='display: block;'>
+                <ul class='details-list' id='list-code-t2-{safe_m_id}'>
+        """
+        for p in stats['probes']:
+            witness_list = ", ".join(p['tests'])
+            action_disp = build_action_trace(p)
+            inner_code_html += f"""
+            <li id='code-probe-{p['id']}' class='probe-item' style='border-left-color: var(--warning);'>
+                <div class='probe-meta'>
+                    <span class='probe-id'>Probe {p['id']}</span>
+                    <div class='action-group'>
+                        <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(m_fqcn)}', '{escape_js(m_name)}', null, null)">View Target Source Code</button>
+                    </div>
+                </div>
+                <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
+                <div class='perturb-action'>{action_disp}</div>
+                <div style='margin-top: 12px; font-size: 12px; color: var(--text-muted); background: #f8fafc; padding: 8px 12px; border-radius: 6px; border: 1px solid #e2e8f0;'>
+                    <strong>Witnessed by {len(p['tests'])} Tests:</strong> <span style="font-family: ui-monospace, SFMono-Regular, monospace;">{escape_html(witness_list)}</span>
+                </div>
+                <div class='triage-actions' id='code-actions-{p['id']}'>
+                    <button class='btn-triage btn-action' title='The code lacks defensive checks. I will add an if (x == null) to the production code.' onclick="triageCode('{safe_m_id}', '{p['id']}', 'action-code', 'Brittle Code')">Brittle Code</button>
+                    <button class='btn-triage btn-noise' title='This state can mathematically never happen in the real app. The tool hallucinated it.' onclick="triageCode('{safe_m_id}', '{p['id']}', 'equivalent-code', 'Impossible State')">Impossible State</button>
+                </div>
+            </li>
+            """
+        inner_code_html += "</ul></div></div>"
+
+        # Code-Centric Archive
+        inner_code_html += f"""
+        <div class='details-section' id='code-noise-section-{safe_m_id}' style='display: none;'>
+            <div class='details-title text-muted accordion-header' onclick="toggleAccordion('content-code-noise-{safe_m_id}', 'icon-code-noise-{safe_m_id}')">
+                <span><span id='icon-code-noise-{safe_m_id}' class='accordion-icon'>▶</span> Filtered Noise (Impossible States) <span id='count-code-noise-{safe_m_id}'>[0 Probes]</span></span>
+            </div>
+            <div id='content-code-noise-{safe_m_id}' style='display: none;'>
+                <ul id='list-code-noise-{safe_m_id}' class='details-list'></ul>
+            </div>
+        </div>
+        """
+
+        code_rows += f"""
+        <tr class="clickable-row" onclick="toggleRow(event, 'code-desc-{safe_m_id}')">
+            <td class="font-medium text-main">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 20px;">
+                    <div class="scrollable-text code-font">{c_name}.{m_name}()</div>
+                    <span class="expand-hint" style="flex-shrink: 0;">Show details ▼</span>
+                </div>
+            </td>
+            <td class="text-center font-medium text-warning">{len(stats['probes'])} Crashes</td>
+            <td id="code-badge-{safe_m_id}" class="text-right">
+                <span class="status-pill pending">[ {len(stats['probes'])} Unreviewed ]</span>
+            </td>
+        </tr>
+        <tr id="code-desc-{safe_m_id}" class="details-row" style="display: none;">
+            <td colspan="3" class="p-0">
+                <div class="test-details" style="padding-top: 16px;">{inner_code_html}</div>
+            </td>
+        </tr>
+        """
 
     html_content = f"""
     <!DOCTYPE html>
@@ -800,6 +825,7 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
             window.initialT1Count = {total_t1_unreviewed};
             window.initialT2Count = {total_t2_unreviewed};
             window.totalTestCount = {total_tests};
+            window.totalMethodCount = {valid_methods_count};
 
             function switchTab(tabId) {{
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -811,10 +837,12 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                     window.event.currentTarget.classList.add('active');
                 }}
 
-                if (tabId === 'probe-view') {{
-                    document.getElementById('metrics-probe').classList.add('active');
-                }} else {{
+                if (tabId === 'test-view') {{
                     document.getElementById('metrics-test').classList.add('active');
+                }} else if (tabId === 'probe-view') {{
+                    document.getElementById('metrics-probe').classList.add('active');
+                }} else if (tabId === 'code-view') {{
+                    document.getElementById('metrics-code').classList.add('active');
                 }}
             }}
 
@@ -842,7 +870,7 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                 }}
             }}
 
-            function triage(testId, probeId, decisionType, tagText) {{
+            function triageTest(testId, probeId, decisionType, tagText) {{
                 const probeEl = document.getElementById(`probe-${{testId}}-${{probeId}}`);
                 const actionsContainer = document.getElementById(`actions-${{testId}}-${{probeId}}`);
 
@@ -858,21 +886,25 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                     // SMART CASCADING across Tests
                     const otherProbes = document.querySelectorAll(`li[data-probe-id="${{probeId}}"][data-state="unreviewed"]`);
                     otherProbes.forEach(otherProbeEl => {{
+                        if (otherProbeEl.id.startsWith('code-probe-')) return;
+
                         if (otherProbeEl.id !== probeEl.id) {{
                             const otherTestId = otherProbeEl.getAttribute('data-test-id');
                             const otherActionsContainer = document.getElementById(`actions-${{otherTestId}}-${{probeId}}`);
 
-                            otherActionsContainer.innerHTML = `<span class="triage-tag tag-cascaded">[ ${{tagText}} (Cascaded) ]</span>`;
-                            otherProbeEl.setAttribute('data-state', 'action');
-                            otherProbeEl.classList.add('cascaded-item');
+                            if(otherActionsContainer) {{
+                                otherActionsContainer.innerHTML = `<span class="triage-tag tag-cascaded">[ ${{tagText}} (Cascaded) ]</span>`;
+                                otherProbeEl.setAttribute('data-state', 'action');
+                                otherProbeEl.classList.add('cascaded-item');
 
-                            const cascadedList = document.getElementById(`list-cascaded-${{otherTestId}}`);
-                            const cascadedContainer = document.getElementById(`cascaded-section-${{otherTestId}}`);
-                            if(cascadedContainer) cascadedContainer.style.display = 'block';
-                            if(cascadedList) cascadedList.appendChild(otherProbeEl);
+                                const cascadedList = document.getElementById(`list-cascaded-${{otherTestId}}`);
+                                const cascadedContainer = document.getElementById(`cascaded-section-${{otherTestId}}`);
+                                if(cascadedContainer) cascadedContainer.style.display = 'block';
+                                if(cascadedList) cascadedList.appendChild(otherProbeEl);
 
-                            updateBadge(otherTestId);
-                            updateAccordionCounts(otherTestId);
+                                updateBadge(otherTestId);
+                                updateAccordionCounts(otherTestId);
+                            }}
                         }}
                     }});
 
@@ -890,7 +922,7 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                             const ledgerBadge = document.getElementById(`ledger-badge-${{probeId}}`);
                             if (ledgerBadge) {{
                                 ledgerBadge.className = 'badge badge-primary';
-                                ledgerBadge.innerText = 'Pending Fix (Claimed)';
+                                ledgerBadge.innerText = 'Pending Fix';
                             }}
                             updateLedgerCounts();
                         }}
@@ -906,21 +938,25 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                     // SMART CASCADING across Tests for Equivalent (Global Trash)
                     const otherProbes = document.querySelectorAll(`li[data-probe-id="${{probeId}}"][data-state="unreviewed"]`);
                     otherProbes.forEach(otherProbeEl => {{
+                        if (otherProbeEl.id.startsWith('code-probe-')) return;
+
                         if (otherProbeEl.id !== probeEl.id) {{
                             const otherTestId = otherProbeEl.getAttribute('data-test-id');
                             const otherActionsContainer = document.getElementById(`actions-${{otherTestId}}-${{probeId}}`);
 
-                            otherActionsContainer.innerHTML = `<span class="triage-tag tag-noise">[ ${{tagText}} (Cascaded) ]</span>`;
-                            otherProbeEl.setAttribute('data-state', 'equivalent');
-                            otherProbeEl.classList.add('noise-item');
+                            if(otherActionsContainer) {{
+                                otherActionsContainer.innerHTML = `<span class="triage-tag tag-noise">[ ${{tagText}} (Cascaded) ]</span>`;
+                                otherProbeEl.setAttribute('data-state', 'equivalent');
+                                otherProbeEl.classList.add('noise-item');
 
-                            const otherNoiseList = document.getElementById(`list-noise-${{otherTestId}}`);
-                            const otherNoiseContainer = document.getElementById(`noise-section-${{otherTestId}}`);
-                            if(otherNoiseContainer) otherNoiseContainer.style.display = 'block';
-                            if(otherNoiseList) otherNoiseList.appendChild(otherProbeEl);
+                                const otherNoiseList = document.getElementById(`list-noise-${{otherTestId}}`);
+                                const otherNoiseContainer = document.getElementById(`noise-section-${{otherTestId}}`);
+                                if(otherNoiseContainer) otherNoiseContainer.style.display = 'block';
+                                if(otherNoiseList) otherNoiseList.appendChild(otherProbeEl);
 
-                            updateBadge(otherTestId);
-                            updateAccordionCounts(otherTestId);
+                                updateBadge(otherTestId);
+                                updateAccordionCounts(otherTestId);
+                            }}
                         }}
                     }});
 
@@ -941,7 +977,7 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                                 ledgerBadge.style.backgroundColor = '#e2e8f0';
                                 ledgerBadge.style.color = '#475569';
                                 ledgerBadge.style.border = '1px solid #cbd5e1';
-                                ledgerBadge.innerText = 'Discarded (Noise)';
+                                ledgerBadge.innerText = 'Discarded Noise';
                             }}
                             updateLedgerCounts();
                         }}
@@ -960,8 +996,91 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                 updateAccordionCounts(testId);
             }}
 
+            function triageCode(methodId, probeId, decisionType, tagText) {{
+                const actionsContainer = document.getElementById(`code-actions-${{probeId}}`);
+                let tagClass = decisionType === 'action-code' ? 'tag-action' : 'tag-noise';
+                actionsContainer.innerHTML = `<span class="triage-tag ${{tagClass}}">[ ${{tagText}} ]</span>`;
+
+                const codeProbeEl = document.getElementById(`code-probe-${{probeId}}`);
+                if(codeProbeEl) {{
+                    codeProbeEl.setAttribute('data-state', decisionType);
+
+                    if (decisionType === 'action-code') {{
+                        codeProbeEl.classList.add('action-required');
+                        codeProbeEl.classList.remove('noise-item');
+                    }} else if (decisionType === 'equivalent-code') {{
+                        codeProbeEl.classList.add('noise-item');
+                        codeProbeEl.classList.remove('action-required');
+
+                        // Move to Local Noise List inside Code-Centric tab
+                        const noiseList = document.getElementById(`list-code-noise-${{methodId}}`);
+                        const noiseContainer = document.getElementById(`code-noise-section-${{methodId}}`);
+                        if(noiseContainer) noiseContainer.style.display = 'block';
+                        if(noiseList) noiseList.appendChild(codeProbeEl);
+                    }}
+                }}
+
+                updateCodeAccordionCounts(methodId);
+                updateCodeBadge(methodId);
+            }}
+
+            function updateCodeAccordionCounts(methodId) {{
+                const listT2 = document.getElementById(`list-code-t2-${{methodId}}`);
+                if (listT2) {{
+                    const count = listT2.querySelectorAll('li').length;
+                    const header = document.getElementById(`count-code-t2-${{methodId}}`);
+                    if (header) header.innerText = `[${{count}} Probes]`;
+                }}
+                const listNoise = document.getElementById(`list-code-noise-${{methodId}}`);
+                if (listNoise) {{
+                    const count = listNoise.querySelectorAll('li').length;
+                    const header = document.getElementById(`count-code-noise-${{methodId}}`);
+                    if (header) header.innerText = `[${{count}} Probes]`;
+                }}
+            }}
+
+            function updateCodeBadge(methodId) {{
+                const methodContainer = document.getElementById(`code-desc-${{methodId}}`);
+                if(!methodContainer) return;
+
+                const total = methodContainer.querySelectorAll('li.probe-item').length;
+                const triaged = methodContainer.querySelectorAll('li.probe-item[data-state]').length;
+                const unreviewed = total - triaged;
+                const needsAction = methodContainer.querySelectorAll('li.probe-item[data-state="action-code"]').length;
+
+                const badgeEl = document.getElementById(`code-badge-${{methodId}}`);
+
+                if (unreviewed === 0 && needsAction === 0) {{
+                    badgeEl.innerHTML = `<span class="status-pill clear">[ Fully Triaged & Clear ]</span>`;
+                }} else if (unreviewed === 0 && needsAction > 0) {{
+                    badgeEl.innerHTML = `<span class="status-pill action">[ Fully Triaged | ${{needsAction}} Need Action ]</span>`;
+                }} else if (unreviewed > 0 && needsAction > 0) {{
+                    badgeEl.innerHTML = `<span class="status-pill mid">[ ${{unreviewed}} Unreviewed | ${{needsAction}} Need Action ]</span>`;
+                }} else {{
+                    badgeEl.innerHTML = `<span class="status-pill pending">[ ${{unreviewed}} Unreviewed ]</span>`;
+                }}
+
+                // Update Code Global Metrics
+                const t2UnreviewedGlobal = document.querySelectorAll('#code-view li.probe-item:not([data-state])').length;
+                const t2ActionGlobal = document.querySelectorAll('#code-view li.probe-item[data-state="action-code"]').length;
+                const t2NoiseGlobal = document.querySelectorAll('#code-view li.probe-item[data-state="equivalent-code"]').length;
+                const fullyTriagedGlobal = document.querySelectorAll('#code-view .status-pill.clear, #code-view .status-pill.action').length;
+
+                const uiT2Inbox = document.getElementById('ui-t2-inbox');
+                if(uiT2Inbox) uiT2Inbox.innerText = t2UnreviewedGlobal + ' / ' + window.initialT2Count;
+
+                const uiT2Action = document.getElementById('ui-t2-action');
+                if(uiT2Action) uiT2Action.innerText = t2ActionGlobal;
+
+                const uiT2Noise = document.getElementById('ui-t2-noise');
+                if(uiT2Noise) uiT2Noise.innerText = t2NoiseGlobal;
+
+                const uiTriagedMethods = document.getElementById('ui-triaged-methods');
+                if(uiTriagedMethods) uiTriagedMethods.innerText = fullyTriagedGlobal + ' / ' + window.totalMethodCount;
+            }}
+
             function updateLedgerCounts() {{
-                const sections = ['t1', 't2', 't3', 'pending', 'discarded'];
+                const sections = ['t1', 't3', 'pending', 'discarded'];
                 sections.forEach(sec => {{
                     const tbody = document.getElementById(`tbody-ledger-${{sec}}`);
                     const countSpan = document.getElementById(`count-ledger-${{sec}}`);
@@ -975,15 +1094,8 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
             function updateAccordionCounts(testId) {{
                 const listT1 = document.getElementById(`list-t1-${{testId}}`);
                 if (listT1) {{
-                    const count = listT1.querySelectorAll('li:not([data-state="noise"]):not([data-state="equivalent"]):not([data-state="action"])').length;
+                    const count = listT1.querySelectorAll('li').length;
                     const header = document.getElementById(`count-t1-${{testId}}`);
-                    if (header) header.innerText = `[${{count}} Probes]`;
-                }}
-
-                const listT2 = document.getElementById(`list-t2-${{testId}}`);
-                if (listT2) {{
-                    const count = listT2.querySelectorAll('li:not([data-state="noise"]):not([data-state="equivalent"]):not([data-state="action"])').length;
-                    const header = document.getElementById(`count-t2-${{testId}}`);
                     if (header) header.innerText = `[${{count}} Probes]`;
                 }}
 
@@ -1023,15 +1135,22 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
             }}
 
             function updateGlobalMetrics() {{
-                const t1Unreviewed = document.querySelectorAll('li[data-tier="1"][data-state="unreviewed"]').length;
-                const t2Unreviewed = document.querySelectorAll('li[data-tier="2"][data-state="unreviewed"]').length;
-                const confirmedBugs = document.querySelectorAll('.tag-action, .tag-cascaded').length;
-                const fullyTriaged = document.querySelectorAll('.status-pill.clear, .status-pill.action').length;
+                const t1Unreviewed = document.querySelectorAll('#test-view li[data-tier="1"]:not([data-state])').length;
+                const confirmedBugs = document.querySelectorAll('#test-view .tag-action, #test-view .tag-cascaded').length;
+                const noiseBugs = document.querySelectorAll('#test-view li.noise-item[data-state="equivalent"]').length;
+                const fullyTriaged = document.querySelectorAll('#test-view .status-pill.clear, #test-view .status-pill.action').length;
 
-                document.getElementById('ui-t1-inbox').innerText = t1Unreviewed + ' / ' + window.initialT1Count;
-                document.getElementById('ui-t2-inbox').innerText = t2Unreviewed + ' / ' + window.initialT2Count;
-                document.getElementById('ui-oracles').innerText = confirmedBugs;
-                document.getElementById('ui-triaged-tests').innerText = fullyTriaged + ' / ' + window.totalTestCount;
+                const inboxEl = document.getElementById('ui-t1-inbox');
+                if(inboxEl) inboxEl.innerText = t1Unreviewed + ' / ' + window.initialT1Count;
+
+                const actionEl = document.getElementById('ui-t1-action');
+                if(actionEl) actionEl.innerText = confirmedBugs;
+
+                const noiseEl = document.getElementById('ui-t1-noise');
+                if(noiseEl) noiseEl.innerText = noiseBugs;
+
+                const triagedEl = document.getElementById('ui-triaged-tests');
+                if(triagedEl) triagedEl.innerText = fullyTriaged + ' / ' + window.totalTestCount;
             }}
 
             function openCodeModal(class1, method1, class2, method2) {{
@@ -1065,12 +1184,12 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                     <div class="metric-label">Critical Survivals (PASS)</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-value" id="ui-t2-inbox">{total_t2_unreviewed} / {total_t2_unreviewed}</div>
-                    <div class="metric-label">Execution Crashes (Robustness)</div>
+                    <div class="metric-value" id="ui-t1-action">0</div>
+                    <div class="metric-label">Confirmed Vulnerabilities</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-value" id="ui-oracles">0</div>
-                    <div class="metric-label">Confirmed Vulnerabilities</div>
+                    <div class="metric-value" id="ui-t1-noise">0</div>
+                    <div class="metric-label">Discarded Noise</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-value" id="ui-triaged-tests">{fully_triaged_tests} / {total_tests}</div>
@@ -1097,9 +1216,29 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                 </div>
             </div>
 
+            <div id="metrics-code" class="metrics-container">
+                <div class="metric-card">
+                    <div class="metric-value" id="ui-t2-inbox">{total_t2_unreviewed} / {total_t2_unreviewed}</div>
+                    <div class="metric-label">Unreviewed Crashes</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="ui-t2-action">0</div>
+                    <div class="metric-label">Brittle Code Found</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="ui-t2-noise">0</div>
+                    <div class="metric-label">Impossible States</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="ui-triaged-methods">0 / {valid_methods_count}</div>
+                    <div class="metric-label">Fully Triaged Methods</div>
+                </div>
+            </div>
+
             <div class="tabs">
                 <div class="tab active" onclick="switchTab('test-view')">Test Quality (Test-Centric)</div>
                 <div class="tab" onclick="switchTab('probe-view')">Vulnerability Ledger (Probe-Centric)</div>
+                <div class="tab" onclick="switchTab('code-view')">Robustness Radar (Code-Centric)</div>
             </div>
 
             <div id="test-view" class="tab-content active">
@@ -1130,6 +1269,27 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
                 </div>
                 <div class="test-details" style="padding: 16px 0;">
                     {ledger_html}
+                </div>
+            </div>
+
+            <div id="code-view" class="tab-content">
+                <div class="tab-header">
+                    <h2>Robustness Radar (Code-Centric)</h2>
+                    <p>Make production code defensive against illegal states. Grouped by target method, strictly showing Execution Crashes (Tier 2).</p>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Target Method</th>
+                                <th class="text-center" style="width: 160px;">Execution Failures</th>
+                                <th class="text-right" style="width: 280px;">Triage Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {code_rows}
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
@@ -1174,9 +1334,11 @@ def generate_dashboard(project_dir, dashboard_ledger, test_stats, metrics, globa
 
                 hljs.highlightElement(container.querySelector('code'));
 
-                if (methodName && methodName !== 'unknown') {{
+                // Regex uses positive lookahead (?=\\s*\\() to ensure we only highlight method calls 
+                // and skip highlighting generic words like 'of' or 'get' in comments.
+                if (methodName && methodName !== 'unknown' && methodName !== '<init>') {{
                     const codeEl = container.querySelector('code');
-                    const regex = new RegExp("(\\\\b" + methodName + "\\\\b)", "g");
+                    const regex = new RegExp("(\\\\b" + methodName + "\\\\b)(?=(?:<[^>]+>)*\\\\s*\\\\()", "g");
                     codeEl.innerHTML = codeEl.innerHTML.replace(regex, "<mark class='scroll-target'>$1</mark>");
 
                     setTimeout(() => {{
@@ -1230,6 +1392,7 @@ def main():
     global_tests_failed = 0
 
     dashboard_tests = defaultdict(lambda: {'hit': 0, 'caught': 0, 'probes': []})
+    dashboard_methods = defaultdict(lambda: {'fqcn': '', 'method': '', 'tests': set(), 'probes': []})
     dashboard_ledger = []
 
     global_tier3_probes = {}
@@ -1259,12 +1422,14 @@ def main():
             global_tests_failed += len(tests)
             best_tier = 2
 
-            for t in tests:
-                dashboard_tests[t]['caught'] += 1
-                dashboard_tests[t]['probes'].append({
-                    'id': pid, 'desc': probe_desc, 'status': 'FAIL (TIMEOUT)', 'tier': 2,
-                    'actions': ['Infinite Loop / Timeout']
-                })
+            method_key = f"{fqcn}#{m_name}"
+            dashboard_methods[method_key]['fqcn'] = fqcn
+            dashboard_methods[method_key]['method'] = m_name
+            dashboard_methods[method_key]['tests'].update(tests)
+            dashboard_methods[method_key]['probes'].append({
+                'id': pid, 'desc': probe_desc, 'tests': sorted(list(tests)), 'status': 'FAIL (TIMEOUT)',
+                'actions': ['Infinite Loop / Timeout']
+            })
         elif test_results_dict:
             global_tests_passed += p_count
             global_tests_failed += f_count
@@ -1278,10 +1443,10 @@ def main():
                 t_tier = 1
 
                 if "FAIL" in s_up:
-                    dashboard_tests[t_name]['caught'] += 1
                     if "ASSERT" in s_up or "COMPARISON" in s_up or "MULTIPLEFAILURES" in s_up:
                         has_assert = True
                         t_tier = 3
+                        dashboard_tests[t_name]['caught'] += 1
                         if pid not in global_tier3_probes:
                             global_tier3_probes[pid] = t_name
                     else:
@@ -1291,9 +1456,12 @@ def main():
                     has_pass = True
 
                 t_actions = actions_map.get(t_name, [])
-                dashboard_tests[t_name]['probes'].append({
-                    'id': pid, 'desc': probe_desc, 'status': status, 'tier': t_tier, 'actions': t_actions
-                })
+
+                # Exclude Tier 2 from Tab 1 Inbox
+                if t_tier != 2:
+                    dashboard_tests[t_name]['probes'].append({
+                        'id': pid, 'desc': probe_desc, 'status': status, 'tier': t_tier, 'actions': t_actions
+                    })
 
             if has_assert:
                 tier3_assert += 1
@@ -1301,6 +1469,19 @@ def main():
             elif has_exception:
                 tier2_error += 1
                 best_tier = 2
+
+                method_key = f"{fqcn}#{m_name}"
+                dashboard_methods[method_key]['fqcn'] = fqcn
+                dashboard_methods[method_key]['method'] = m_name
+                dashboard_methods[method_key]['tests'].update(tests)
+
+                # Fetch actions for the first test as a representative trace
+                rep_test = sorted(list(tests))[0] if tests else None
+                rep_actions = actions_map.get(rep_test, []) if rep_test else []
+
+                dashboard_methods[method_key]['probes'].append({
+                    'id': pid, 'desc': probe_desc, 'tests': sorted(list(tests)), 'actions': rep_actions
+                })
             elif has_pass:
                 tier1_survived += 1
                 best_tier = 1
@@ -1309,7 +1490,7 @@ def main():
         else:
             errors_count += 1
 
-        if not is_timeout and test_results_dict:
+        if not is_timeout and test_results_dict and best_tier != 2:
             dashboard_ledger.append({
                 'id': pid,
                 'desc': probe_desc,
@@ -1360,7 +1541,8 @@ def main():
         'brittle': tier2_error
     }
 
-    html_file = generate_dashboard(project_dir, dashboard_ledger, dashboard_tests, metrics, global_tier3_probes)
+    html_file = generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, dashboard_tests, metrics,
+                                   global_tier3_probes)
     print(f"\nDashboard generated at: {html_file}")
 
     webbrowser.open('file://' + os.path.realpath(html_file))
