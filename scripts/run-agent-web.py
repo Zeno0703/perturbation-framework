@@ -188,10 +188,16 @@ def build_action_trace(p):
     if not action_list:
         action_list = ["State modification applied"]
 
+    exceptions = p.get('exceptions', [])
+    exc_str = f" <span style='color: var(--danger); font-weight: 600;'>({escape_html(' | '.join(exceptions))})</span>" if exceptions else ""
+
     disp = f"<span class='text-muted'>Execution Trace (Hit {len(action_list)} times):</span><br>"
     disp += "<div class='execution-trace'>"
     for idx, act in enumerate(action_list, 1):
-        disp += f"{idx}. {escape_html(act)}<br>"
+        safe_act = escape_html(act)
+        if idx == len(action_list):
+            safe_act += exc_str
+        disp += f"{idx}. {safe_act}<br>"
     disp += "</div>"
     return disp
 
@@ -1442,7 +1448,7 @@ def main():
             dashboard_methods[method_key]['tests'].update(tests)
             dashboard_methods[method_key]['probes'].append({
                 'id': pid, 'desc': probe_desc, 'tests': sorted(list(tests)), 'status': 'FAIL (TIMEOUT)',
-                'actions': ['Infinite Loop / Timeout']
+                'actions': ['Infinite Loop / Timeout'], 'exceptions': ['TIMEOUT: Execution exceeded time limit']
             })
         elif test_results_dict:
             global_tests_passed += p_count
@@ -1451,6 +1457,9 @@ def main():
             has_assert = False
             has_exception = False
             has_pass = False
+
+            # Keep track of exceptions caused by this specific probe across multiple tests
+            probe_exceptions = set()
 
             for t_name, status in test_results_dict.items():
                 s_up = status.upper()
@@ -1466,6 +1475,11 @@ def main():
                     else:
                         has_exception = True
                         t_tier = 2
+
+                        # Clean up "FAIL (java.lang.NullPointerException)" to just the exception
+                        clean_exc = status.replace("FAIL (", "").rstrip(")") if status.startswith("FAIL (") else status
+                        probe_exceptions.add(clean_exc)
+
                 elif "PASS" in s_up:
                     has_pass = True
 
@@ -1494,7 +1508,8 @@ def main():
                 rep_actions = actions_map.get(rep_test, []) if rep_test else []
 
                 dashboard_methods[method_key]['probes'].append({
-                    'id': pid, 'desc': probe_desc, 'tests': sorted(list(tests)), 'actions': rep_actions
+                    'id': pid, 'desc': probe_desc, 'tests': sorted(list(tests)), 'actions': rep_actions,
+                    'exceptions': sorted(list(probe_exceptions))
                 })
             elif has_pass:
                 tier1_survived += 1
