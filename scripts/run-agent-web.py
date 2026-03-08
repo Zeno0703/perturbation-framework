@@ -428,6 +428,20 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
         if t1:
             inner_html += f"""
+            <div style='margin-bottom: 20px; padding: 10px 14px; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; display: flex; align-items: center; gap: 12px; justify-content: space-between;'>
+                <span style='font-size: 12px; color: var(--text-muted); font-weight: 500;'>
+                    <strong style='color: var(--text-main);'>Test Utilities</strong> &mdash; Heuristic tools to reduce triage fatigue.
+                </span>
+                <button class='btn-small' style='border-style: dashed; color: var(--text-muted); white-space: nowrap; flex-shrink: 0;'
+                    title='Automatically moves probes whose target package does not match this test&apos;s package to Filtered Noise (Out of Scope). Uses the standard Maven package-matching convention.'
+                    onclick="event.stopPropagation(); autoSweep('{safe_id}', '{escape_js(test_class)}', this)">
+                    ✨ Auto-Sweep Distant Probes
+                </button>
+            </div>
+            """
+
+        if t1:
+            inner_html += f"""
             <div class='details-section'>
                 <div class='details-title text-danger accordion-header' onclick="toggleAccordion('content-t1-{safe_id}', 'icon-t1-{safe_id}')">
                     <span><span id='icon-t1-{safe_id}' class='accordion-icon'>▼</span> Survived (Failed to Catch) <span id='count-t1-{safe_id}'>[{len(t1)} Probes]</span></span>
@@ -441,7 +455,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 action_disp = build_action_trace(p)
 
                 inner_html += f"""
-                        <li id='probe-{safe_id}-{p['id']}' data-probe-id='{p['id']}' data-test-id='{safe_id}' data-tier='1' data-state='unreviewed' class='probe-item' style='border-left-color: var(--danger);'>
+                        <li id='probe-{safe_id}-{p['id']}' data-probe-id='{p['id']}' data-test-id='{safe_id}' data-tier='1' data-state='unreviewed' data-target-fqcn='{escape_js(fqcn)}' class='probe-item' style='border-left-color: var(--danger);'>
                             <div class='probe-meta'>
                                 <span class='probe-id'>Probe {p['id']}</span>
                                 <div class='action-group'>
@@ -997,7 +1011,89 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 updateAccordionCounts(testId);
             }}
 
+            // State for the sweep modal
+            let _sweepState = {{ testId: null, testPackage: null, groups: {{}} }};
+
+            function autoSweep(testId, testFqcn, btn) {{
+                const testParts = testFqcn.split('.');
+                testParts.pop();
+                const testPackage = testParts.join('.');
+
+                const survivedList = document.getElementById(`list-t1-${{testId}}`);
+                if (!survivedList) return;
+
+                const unreviewed = Array.from(survivedList.querySelectorAll('li[data-state="unreviewed"]'));
+
+                // Group distant probes by their target package
+                const groups = {{}};
+                unreviewed.forEach(probeEl => {{
+                    const targetFqcn = probeEl.getAttribute('data-target-fqcn') || '';
+                    const targetParts = targetFqcn.split('.');
+                    targetParts.pop();
+                    const targetPackage = targetParts.join('.');
+                    if (testPackage && targetPackage && testPackage !== targetPackage) {{
+                        if (!groups[targetPackage]) groups[targetPackage] = [];
+                        groups[targetPackage].push(probeEl.getAttribute('data-probe-id'));
+                    }}
+                }});
+
+                const packageCount = Object.keys(groups).length;
+                if (packageCount === 0) {{
+                    alert(`Auto-Sweep: No distant probes found.\n\nTest package: "${{testPackage}}"\n\nAll remaining unreviewed probes already belong to the same package.`);
+                    return;
+                }}
+
+                // Save state and build the modal body
+                _sweepState = {{ testId, testPackage, groups }};
+
+                const totalProbes = Object.values(groups).reduce((s, ids) => s + ids.length, 0);
+                const sortedPackages = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
+
+                let rowsHtml = '';
+                sortedPackages.forEach(pkg => {{
+                    const count = groups[pkg].length;
+                    rowsHtml += `
+                    <label style="display:flex; align-items:center; gap:12px; padding:10px 14px; border:1px solid #e2e8f0;
+                                  border-radius:8px; cursor:pointer; background:#fff; transition: background 0.15s;"
+                           onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'">
+                        <input type="checkbox" checked data-pkg="${{pkg}}"
+                               style="width:16px; height:16px; accent-color: var(--primary); cursor:pointer; flex-shrink:0;">
+                        <span style="font-family:ui-monospace,monospace; font-size:13px; font-weight:600; color:var(--text-main); flex:1;">${{pkg}}</span>
+                        <span style="font-size:12px; font-weight:600; color:var(--text-muted); background:#f1f5f9;
+                                     padding:3px 10px; border-radius:9999px; white-space:nowrap;">${{count}} probe${{count !== 1 ? 's' : ''}}</span>
+                    </label>`;
+                }});
+
+                document.getElementById('sweepModalTestPkg').innerText = testPackage;
+                document.getElementById('sweepModalTotal').innerText = `${{totalProbes}} probe${{totalProbes !== 1 ? 's' : ''}} across ${{packageCount}} package${{packageCount !== 1 ? 's' : ''}}`;
+                document.getElementById('sweepModalRows').innerHTML = rowsHtml;
+                document.getElementById('sweepModal').style.display = 'block';
+                document.body.style.overflow = 'hidden';
+            }}
+
+            function confirmSweep() {{
+                const {{ testId, groups }} = _sweepState;
+                const checkboxes = document.querySelectorAll('#sweepModalRows input[type=checkbox]');
+                let sweptCount = 0;
+                checkboxes.forEach(cb => {{
+                    if (cb.checked) {{
+                        const pkg = cb.getAttribute('data-pkg');
+                        (groups[pkg] || []).forEach(probeId => {{
+                            triageTest(testId, probeId, 'noise', 'Out of Scope (Auto-Swept)');
+                            sweptCount++;
+                        }});
+                    }}
+                }});
+                closeSweepModal();
+            }}
+
+            function closeSweepModal() {{
+                document.getElementById('sweepModal').style.display = 'none';
+                document.body.style.overflow = 'auto';
+                _sweepState = {{ testId: null, testPackage: null, groups: {{}} }};
+            }}
             function triageCode(methodId, probeId, decisionType, tagText) {{
+
                 const actionsContainer = document.getElementById(`code-actions-${{probeId}}`);
                 let tagClass = decisionType === 'action-code' ? 'tag-action' : 'tag-noise';
                 actionsContainer.innerHTML = `<span class="triage-tag ${{tagClass}}">[ ${{tagText}} ]</span>`;
@@ -1296,6 +1392,27 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
         </div>
 
+        <div id="sweepModal" class="modal" onclick="if(event.target===this) closeSweepModal()">
+            <div class="modal-content" style="width: 560px; height: auto; max-height: 80vh; margin: 6% auto;">
+                <div class="modal-header">
+                    <h2>✨ Sweep Distant Probes</h2>
+                    <span class="close" onclick="closeSweepModal()">&times;</span>
+                </div>
+                <p style="margin: 0 0 6px 0; font-size: 13px; color: var(--text-muted);">
+                    Test package: <code id="sweepModalTestPkg" style="font-weight:700; color: var(--text-main);"></code>
+                </p>
+                <p style="margin: 0 0 16px 0; font-size: 13px; color: var(--text-muted);">
+                    Found <strong id="sweepModalTotal"></strong> outside this package, grouped below.
+                    <br>Uncheck any package you want to <strong>keep</strong> in your inbox, then confirm.
+                </p>
+                <div id="sweepModalRows" style="display:flex; flex-direction:column; gap:8px; max-height:45vh; overflow-y:auto; padding-right:4px;"></div>
+                <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px; padding-top:16px; border-top:1px solid #e2e8f0;">
+                    <button class="btn-small" onclick="closeSweepModal()">Cancel</button>
+                    <button class="btn-primary" onclick="confirmSweep()">Confirm Sweep</button>
+                </div>
+            </div>
+        </div>
+
         <div id="codeModal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
@@ -1352,15 +1469,16 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             }}
 
             window.onclick = function(event) {{
-                const modal = document.getElementById('codeModal');
-                if (event.target == modal) {{
-                    closeModal();
-                }}
+                const codeModal = document.getElementById('codeModal');
+                if (event.target == codeModal) closeModal();
+                const sweepModal = document.getElementById('sweepModal');
+                if (event.target == sweepModal) closeSweepModal();
             }}
 
             document.addEventListener('keydown', function(event) {{
                 if (event.key === "Escape") {{
                     closeModal();
+                    closeSweepModal();
                 }}
             }});
         </script>
