@@ -31,6 +31,8 @@ def run_maven(probe_id, project_dir, agent_jar, target_package, timeout_limit=No
         f'-Dperturb.outDir={OUT_DIR} '
         f'-Dperturb.activeProbe={probe_id} '
         '-Dorg.agent.hidden.bytebuddy.experimental=true'
+        '-Xshare:off'
+        '-XX:+EnableDynamicAgentLoading'
     )
 
     command = [
@@ -1840,7 +1842,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
 def main():
     if len(sys.argv) != 4:
-        sys.exit("Usage: python3 run-agent.py <project_dir> <agent_jar> <target_package>")
+        sys.exit("Usage: python3 run-agent-web.py <project_dir> <agent_jar> <target_package>")
 
     script_start = time.time()
     project_dir, agent_jar, target_package = sys.argv[1:4]
