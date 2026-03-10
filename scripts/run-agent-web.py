@@ -225,13 +225,12 @@ def escape_js(text):
     return str(text).replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"')
 
 
-def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_stats, metrics, global_tier3_probes):
+def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_stats,
+                       test_summary, metrics, global_tier3_probes, master_probes):
     html_path = os.path.join(project_dir, OUT_DIR, "dashboard.html")
 
-    # Build sorted probe ID list for the persistence storage key
-    all_probe_ids = sorted(set(
-        p['id'] for p in dashboard_ledger
-    ))
+    # Build sorted probe ID list — all probes including un-hit
+    all_probe_ids = sorted(master_probes.keys())
     probe_ids_json = json.dumps(all_probe_ids)
 
     file_cache = {}
@@ -263,26 +262,55 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             serialisable_cache[fqcn] = content
     file_cache_json = json.dumps(serialisable_cache).replace("</", "<\\/")
 
-    def build_ledger_row(p):
+    def build_ledger_row(p, probe_status=None):
         class_name = p['fqcn'].split('.')[-1] if p['fqcn'] != 'unknown' else 'Unknown'
+        hit_count = len(p['tests'])
+        ps = probe_status or (
+            'Survived' if p.get('tier') == 1 else
+            'Clean Kill' if p.get('tier') == 3 else 'Unknown'
+        )
 
-        if p['tier'] == 1:
+        if ps == 'Un-hit':
+            badge_class = ""
+            badge_style = "background:#f1f5f9; color:var(--text-muted); border:1px solid var(--border-strong);"
+            status_text = "Un-hit / Dead Code"
+            row_style = "opacity:0.5;"
+        elif ps == 'TIMEOUT':
+            badge_class = "badge-warning"
+            badge_style = ""
+            status_text = "⏱ TIMEOUT"
+            row_style = ""
+        elif ps == 'Survived':
             badge_class = "badge-danger"
-            status_text = "Globally Unprotected"
-        else:
+            badge_style = ""
+            status_text = "Unprotected"
+            row_style = ""
+        elif ps == 'Clean Kill':
             badge_class = "badge-success"
-            status_text = "Globally Caught"
+            badge_style = ""
+            status_text = "Clean Kill"
+            row_style = ""
+        elif ps == 'Dirty Kill':
+            badge_class = "badge-warning"
+            badge_style = ""
+            status_text = "Dirty Kill"
+            row_style = "opacity:0.75;"
+        else:
+            badge_class = ""
+            badge_style = "background:#f1f5f9; color:var(--text-muted); border:1px solid var(--border-strong);"
+            status_text = ps
+            row_style = ""
 
-        witness_list = "".join([f"<li style='margin-bottom: 4px;'>{escape_html(t)}</li>" for t in p['tests']])
+        witness_list = "".join([f"<li style='margin-bottom: 4px;'>{escape_html(t)}</li>" for t in p['tests']]) if p['tests'] else "<li style='color:var(--text-muted); font-style:italic;'>No tests hit this probe.</li>"
         ide_link = to_idea_link(project_dir, p['fqcn'], False)
 
         return f"""
-        <tr id='ledger-row-{p['id']}' class="clickable-row" onclick="toggleRow(event, 'ledger-desc-{p['id']}')">
+        <tr id='ledger-row-{p['id']}' class="clickable-row" style="{row_style}" onclick="toggleRow(event, 'ledger-desc-{p['id']}')">
             <td><div class="scrollable-text font-medium code-font">#{p['id']}</div></td>
             <td><div class="scrollable-text code-font">{class_name}.{p['method']}()</div></td>
             <td><div class="scrollable-text">{escape_html(p['desc'])}</div></td>
-            <td class="text-center"><div class="scrollable-text" style="text-align:center;">{len(p['tests'])} Tests</div></td>
-            <td class="text-right"><div class="scrollable-text" style="text-align:right;"><span id="ledger-badge-{p['id']}" class="badge {badge_class}">{status_text}</span></div></td>
+            <td class="text-center"><div class="scrollable-text" style="text-align:center;">{hit_count} Test{'s' if hit_count != 1 else ''}</div></td>
+            <td class="text-right"><div class="scrollable-text" style="text-align:right;"><span id="ledger-badge-{p['id']}" class="badge {badge_class}" style="{badge_style}">{status_text}</span></div></td>
         </tr>
         <tr id="ledger-desc-{p['id']}" class="details-row" style="display: none;">
             <td colspan="5" class="p-0">
@@ -296,7 +324,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                         </div>
                         <div style="flex: 1; display: flex; flex-direction: column; justify-content: flex-start; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 24px; min-width: 200px;">
                             <h4 style="margin: 0 0 2px 0; font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.06em; font-weight: 700; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Actions</h4>
-                            <a href="{ide_link}" class="btn-primary" style="text-align: center; width: 100%;">Open Target in IDE</a>
+                            <a href="{ide_link}" class="btn-small" style="text-align: center; width: 100%;">Open in IDE</a>
                             <button class="btn-small" style="width: 100%;" onclick="event.stopPropagation(); openCodeModal('{escape_js(p['fqcn'])}', '{escape_js(p['method'])}', null, null)">View Source</button>
                             <div class='ledger-resolve-wrap'>
                                 <button class='btn-resolve' data-resolve-ledger="{p['id']}"
@@ -320,8 +348,8 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     <tr>
                         <th style="width: 110px;">Probe ID</th>
                         <th style="width: 300px;">Target</th>
-                        <th>Mutation</th>
-                        <th class="text-center" style="width: 130px;">Footprint</th>
+                        <th>Perturbation</th>
+                        <th class="text-center" style="width: 150px;">Hit by Tests</th>
                         <th class="text-right" style="width: 210px;">Status</th>
                     </tr>
                 </thead>
@@ -332,23 +360,40 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
         </div>
         """
 
-    ledger_t1 = []
-    ledger_t3 = []
+    # ── Build all probe groups from master_probes ──────────────────────────
+    def mp_to_ledger_p(mp):
+        return {
+            'id': mp['id'], 'desc': mp['desc'], 'fqcn': mp['fqcn'],
+            'method': mp['method'], 'tests': sorted(mp['test_outcomes'].keys())
+        }
 
-    for p in sorted(dashboard_ledger, key=lambda x: -len(x['tests'])):
-        if p['tier'] == 1:
-            ledger_t1.append(p)
-        elif p['tier'] == 3:
-            ledger_t3.append(p)
+    ledger_t1 = []   # Survived
+    ledger_t3 = []   # Clean Kill
+    ledger_dirty = []
+    ledger_timeout = []
+    ledger_unhit = []
+
+    for pid, mp in sorted(master_probes.items(), key=lambda x: -len(x[1]['test_outcomes'])):
+        lp = mp_to_ledger_p(mp)
+        if mp['status'] == 'Survived':
+            ledger_t1.append(lp)
+        elif mp['status'] == 'Clean Kill':
+            ledger_t3.append(lp)
+        elif mp['status'] == 'Dirty Kill':
+            ledger_dirty.append(lp)
+        elif mp['status'] == 'TIMEOUT':
+            ledger_timeout.append(lp)
+        elif mp['status'] == 'Un-hit':
+            ledger_unhit.append(lp)
 
     ledger_html = ""
 
     if ledger_t1:
-        rows_html = "".join([build_ledger_row(p) for p in ledger_t1])
+        rows_html = "".join([build_ledger_row(p, 'Survived') for p in ledger_t1])
         ledger_html += f"""
         <div class='details-section'>
             <div class='details-title text-danger accordion-header' onclick="toggleAccordion('content-ledger-t1', 'icon-ledger-t1')">
-                <span><span id='icon-ledger-t1' class='accordion-icon'>▼</span> Globally Unprotected <span id='count-ledger-t1'>[{len(ledger_t1)} Probes]</span></span>
+                <span><span id='icon-ledger-t1' class='accordion-icon'>▼</span> Unprotected (Survived) <span id='count-ledger-t1'>[{len(ledger_t1)} Probes]</span></span>
             </div>
             <div id='content-ledger-t1' style='display: block;'>
                 {build_ledger_table(rows_html, 'tbody-ledger-t1')}
@@ -368,14 +413,41 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
     """
 
     if ledger_t3:
-        rows_html = "".join([build_ledger_row(p) for p in ledger_t3])
+        rows_html = "".join([build_ledger_row(p, 'Clean Kill') for p in ledger_t3])
         ledger_html += f"""
         <div class='details-section'>
             <div class='details-title text-success accordion-header' onclick="toggleAccordion('content-ledger-t3', 'icon-ledger-t3')">
-                <span><span id='icon-ledger-t3' class='accordion-icon'>▶</span> Globally Caught <span id='count-ledger-t3'>[{len(ledger_t3)} Probes]</span></span>
+                <span><span id='icon-ledger-t3' class='accordion-icon'>▶</span> Clean Kills (Assert) <span id='count-ledger-t3'>[{len(ledger_t3)} Probes]</span></span>
             </div>
             <div id='content-ledger-t3' style='display: none;'>
                 {build_ledger_table(rows_html, 'tbody-ledger-t3')}
+            </div>
+        </div>
+        """
+
+    if ledger_dirty or ledger_timeout:
+        all_dirty = ledger_dirty + ledger_timeout
+        rows_html = "".join([build_ledger_row(p, 'Dirty Kill' if p in ledger_dirty else 'TIMEOUT') for p in all_dirty])
+        ledger_html += f"""
+        <div class='details-section'>
+            <div class='details-title text-warning accordion-header' onclick="toggleAccordion('content-ledger-dirty', 'icon-ledger-dirty')">
+                <span><span id='icon-ledger-dirty' class='accordion-icon'>▶</span> Dirty Kills / Timeouts <span id='count-ledger-dirty'>[{len(all_dirty)} Probes]</span></span>
+            </div>
+            <div id='content-ledger-dirty' style='display: none;'>
+                {build_ledger_table(rows_html, 'tbody-ledger-dirty')}
+            </div>
+        </div>
+        """
+
+    if ledger_unhit:
+        rows_html = "".join([build_ledger_row(p, 'Un-hit') for p in ledger_unhit])
+        ledger_html += f"""
+        <div class='details-section'>
+            <div class='details-title text-muted accordion-header' onclick="toggleAccordion('content-ledger-unhit', 'icon-ledger-unhit')">
+                <span><span id='icon-ledger-unhit' class='accordion-icon'>▶</span> Un-hit / Dead Code <span id='count-ledger-unhit'>[{len(ledger_unhit)} Probes]</span></span>
+            </div>
+            <div id='content-ledger-unhit' style='display: none;'>
+                {build_ledger_table(rows_html, 'tbody-ledger-unhit')}
             </div>
         </div>
         """
@@ -393,42 +465,72 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
     valid_sorted_tests = []
 
-    for test_name, stats in sorted(test_stats.items(), key=lambda x: (x[1]['hit'] - x[1]['caught'], x[1]['hit']),
-                                   reverse=True):
+    # Sort tests: most survived probes first (most vulnerable at top), then by total footprint
+    def test_sort_key(item):
+        t_name = item[0]
+        s = test_summary.get(t_name, {'clean': 0, 'dirty': 0, 'survived': 0})
+        return (-s['survived'], -(s['clean'] + s['dirty'] + s['survived']))
+
+    for test_name, stats in sorted(test_stats.items(), key=lambda x: x[0]):
         t1 = []
+        t2_exceptions = []
         t3 = []
         t_covered = []
 
         for p in stats['probes']:
             if p['tier'] == 3:
                 t3.append(p)
+            elif p['tier'] == 2:
+                t2_exceptions.append(p)
             elif p['id'] in global_tier3_probes:
                 p['saviour'] = global_tier3_probes[p['id']]
                 t_covered.append(p)
             elif p['tier'] == 1:
                 t1.append(p)
 
-        semantic_hits = len(t1) + len(t3) + len(t_covered)
-        if semantic_hits == 0:
+        total_footprint = len(t1) + len(t2_exceptions) + len(t3) + len(t_covered)
+        if total_footprint == 0:
             continue
 
-        valid_sorted_tests.append((test_name, stats, t1, t3, t_covered, semantic_hits))
+        valid_sorted_tests.append((test_name, stats, t1, t2_exceptions, t3, t_covered, total_footprint))
+
+    valid_sorted_tests.sort(key=test_sort_key)
 
     total_tests = len(valid_sorted_tests)
     total_t1_unreviewed = 0
     fully_triaged_tests = 0
     test_rows = ""
 
-    for test_name, stats, t1, t3, t_covered, semantic_hits in valid_sorted_tests:
+    for test_name, stats, t1, t2_exceptions, t3, t_covered, total_footprint in valid_sorted_tests:
         safe_id = sanitize_id(test_name)
         unreviewed_count = len(t1)
         total_t1_unreviewed += unreviewed_count
 
+        ts = test_summary.get(test_name, {'clean': 0, 'dirty': 0, 'survived': 0})
+        n_clean    = ts['clean']
+        n_dirty    = ts['dirty']
+        n_survived = ts['survived']
+        is_vulnerable = n_survived > 0
+
         if unreviewed_count == 0:
-            badge_html = f'<span class="status-pill clear">[ Fully Triaged & Clear ]</span>'
+            status_pill = '<span class="status-pill clear">[ Fully Triaged ]</span>'
             fully_triaged_tests += 1
         else:
-            badge_html = f'<span class="status-pill pending">[ {unreviewed_count} Unreviewed ]</span>'
+            status_pill = f'<span class="status-pill {"action" if is_vulnerable else "pending"}">[ {unreviewed_count} Unreviewed ]</span>'
+
+        # Footprint badges — compact colored circles with just the number
+        _dot = "display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;font-size:11px;font-weight:700;flex-shrink:0;"
+        footprint_badges = ""
+        if n_clean:
+            footprint_badges += f'<span style="{_dot}background:var(--success-bg);color:var(--success-text);border:1px solid #a7f3d0;" title="Clean kills (assertion failures)">{n_clean}</span>'
+        if n_dirty:
+            footprint_badges += f'<span style="{_dot}background:var(--warning-bg);color:var(--warning-text);border:1px solid #fde68a;" title="Exception crashes">{n_dirty}</span>'
+        if n_survived:
+            footprint_badges += f'<span style="{_dot}background:var(--danger-bg);color:var(--danger-text);border:1px solid #fecaca;" title="Survived (missed by this test)">{n_survived}</span>'
+        if not footprint_badges:
+            footprint_badges = f'<span style="{_dot}background:#f1f5f9;color:var(--text-muted);border:1px solid var(--border-strong);" title="Total probes">{total_footprint}</span>'
+
+        badge_html = status_pill
 
         test_class = test_name.split('#')[0]
         test_method = test_name.split('#')[1] if '#' in test_name else "unknown"
@@ -499,10 +601,43 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                         """
             inner_html += "</ul></div></div>"
 
+        # Exceptions section (Dirty Kills) — read-only, no triage needed
+        if t2_exceptions:
+            inner_html += f"""
+            <div class='details-section'>
+                <div class='details-title text-warning accordion-header' onclick="toggleAccordion('content-t2-{safe_id}', 'icon-t2-{safe_id}')">
+                    <span><span id='icon-t2-{safe_id}' class='accordion-icon'>▶</span> Exception Crashes (Dirty Kills) <span id='count-t2-{safe_id}'>[{len(t2_exceptions)} Probes]</span></span>
+                </div>
+                <div id='content-t2-{safe_id}' style='display: none;'>
+                    <ul class='details-list'>
+            """
+            for p in t2_exceptions:
+                mod, fqcn, m_name = parse_probe(p['desc'])
+                target_link = to_idea_link(project_dir, fqcn, is_test=False)
+                action_disp = build_action_trace(p)
+                inner_html += f"""
+                        <li class='probe-item' style='border-left-color: var(--warning); opacity:0.8;'>
+                            <div class='probe-meta'>
+                                <span class='probe-id'>Probe {p['id']}</span>
+                                <div class='action-group'>
+                                    <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(test_class)}', '{escape_js(test_method)}', '{escape_js(fqcn)}', '{escape_js(m_name)}')">View Source</button>
+                                    <a href="{target_link}" class="btn-small">Open Target</a>
+                                    <a href="{test_link}" class="btn-small">Open Test</a>
+                                </div>
+                            </div>
+                            <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
+                            <div class='perturb-action'>{action_disp}</div>
+                            <div style='margin-top:8px; font-size:12px; color:var(--warning-text); background:var(--warning-bg); padding:7px 12px; border-radius:var(--radius-sm); border:1px solid #fde68a;'>
+                                Exception-level crash &mdash; reviewed in <strong>Code-Centric</strong> tab.
+                            </div>
+                        </li>
+                        """
+            inner_html += "</ul></div></div>"
+
         inner_html += f"""
         <div class='details-section' id='cascaded-section-{safe_id}' style='display: none;'>
             <div class='details-title text-orange accordion-header' onclick="toggleAccordion('content-cascaded-{safe_id}', 'icon-cascaded-{safe_id}')">
-                <span><span id='icon-cascaded-{safe_id}' class='accordion-icon'>▶</span> Action Required (Identified in Another Test) <span id='count-cascaded-{safe_id}'>[0 Probes]</span></span>
+                <span><span id='icon-cascaded-{safe_id}' class='accordion-icon'>▶</span> Also Needs Fixing (Seen Elsewhere) <span id='count-cascaded-{safe_id}'>[0 Probes]</span></span>
             </div>
             <div id='content-cascaded-{safe_id}' style='display: none;'>
                 <ul id='list-cascaded-{safe_id}' class='details-list'></ul>
@@ -597,7 +732,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     <span class="expand-hint" style="flex-shrink: 0;">Show details ▼</span>
                 </div>
             </td>
-            <td class="text-center"><div class="scrollable-text" style="text-align:center;">{semantic_hits}</div></td>
+            <td class="text-center"><div class="scrollable-text" style="text-align:center; display:flex; gap:4px; justify-content:center; align-items:center;">{footprint_badges}</div></td>
             <td id="badge-{safe_id}" class="text-right"><div class="scrollable-text" style="text-align:right;">{badge_html}</div></td>
         </tr>
         <tr id="desc-{safe_id}" class="details-row" style="display: none;">
@@ -629,20 +764,47 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 <ul class='details-list' id='list-code-t2-{safe_m_id}'>
         """
         for p in stats['probes']:
-            witness_list = ", ".join(p['tests'])
             action_disp = build_action_trace(p)
+            ide_link = to_idea_link(project_dir, m_fqcn, False)
+
+            # Build per-test color-coded witness list from master_probes
+            mp_data = master_probes.get(p['id'])
+            test_items = ""
+            n_clean = n_dirty = n_survived = 0
+            if mp_data:
+                for t_name, outcome in mp_data['test_outcomes'].items():
+                    if outcome == 'clean':
+                        color = 'var(--success-text)'; bg = 'var(--success-bg)'; label = 'Clean Kill'
+                        n_clean += 1
+                    elif outcome == 'dirty':
+                        color = 'var(--warning-text)'; bg = 'var(--warning-bg)'; label = 'Exception'
+                        n_dirty += 1
+                    elif outcome == 'timeout':
+                        color = 'var(--warning-text)'; bg = 'var(--warning-bg)'; label = 'TIMEOUT'
+                        n_dirty += 1
+                    else:
+                        color = 'var(--danger-text)'; bg = 'var(--danger-bg)'; label = 'Survived'
+                        n_survived += 1
+                    test_items += f"<li style='margin-bottom:3px; display:flex; align-items:center; gap:8px;'><span style='font-size:11px; font-weight:600; color:{color}; background:{bg}; padding:2px 7px; border-radius:9999px; flex-shrink:0;'>{label}</span><span class='code-font' style='font-size:12px; color:var(--text-muted);'>{escape_html(t_name)}</span></li>"
+            if not test_items:
+                test_items = "<li style='color:var(--text-muted); font-style:italic;'>No outcomes recorded.</li>"
+            total_witnesses = n_clean + n_dirty + n_survived
+            summary = f"Hit by {total_witnesses} test{'s' if total_witnesses!=1 else ''}. <strong style='color:var(--success-text);'>{n_clean} clean</strong>, <strong style='color:var(--warning-text);'>{n_dirty} crashed</strong>, <strong style='color:var(--danger-text);'>{n_survived} missed</strong>."
+
             inner_code_html += f"""
             <li id='code-probe-{p['id']}' data-state='unreviewed' class='probe-item' style='border-left-color: var(--warning);'>
                 <div class='probe-meta'>
                     <span class='probe-id'>Probe {p['id']}</span>
                     <div class='action-group'>
                         <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(m_fqcn)}', '{escape_js(m_name)}', null, null)">View Source</button>
+                        <a href="{ide_link}" class="btn-small">Open in IDE</a>
                     </div>
                 </div>
                 <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
                 <div class='perturb-action'>{action_disp}</div>
-                <div style='margin-top: 10px; font-size: 12px; color: var(--text-muted); background: #f8fafc; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);'>
-                    <strong>Witnessed by {len(p['tests'])} tests:</strong> <span class="code-font" style="font-weight:400;">{escape_html(witness_list)}</span>
+                <div style='margin-top: 10px; font-size: 13px; color: var(--text-muted); background: #f8fafc; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);'>
+                    <p style='margin:0 0 8px 0;'>{summary}</p>
+                    <ul style='margin:0; padding-left:0; list-style:none; max-height:120px; overflow-y:auto;'>{test_items}</ul>
                 </div>
                 <div class='triage-actions' id='code-actions-{p['id']}'>
                     <button class='btn-triage btn-action' title='The code lacks defensive checks. I will add defensive checks to the production code.' onclick="triageCode('{safe_m_id}', '{p['id']}', 'action-code', 'Brittle Code')">Brittle Code</button>
@@ -1223,49 +1385,69 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             // ── Mark as Resolved ────────────────────────────────────────
             function markResolved(probeId, context, btn) {{
                 // context = 'test-<testId>'  |  'code'  |  'ledger'
-                let probeEl = null;
+
+                // Helper: visually resolve a single probe <li> element and its badge
+                function resolveProbeEl(el) {{
+                    if (!el || el.getAttribute('data-resolved') === 'true') return;
+                    el.setAttribute('data-resolved', 'true');
+                    el.classList.add('resolved-item');
+                    const tid = el.getAttribute('data-test-id');
+                    if (tid) updateBadge(tid);
+                }}
+
+                // Helper: flip a resolve button to disabled "Fixed" state
+                function flipBtn(b) {{
+                    if (!b || b.disabled) return;
+                    b.innerHTML = 'Fixed';
+                    b.classList.add('is-resolved');
+                    b.disabled = true;
+                    b.onclick = null;
+                }}
 
                 if (context.startsWith('test-')) {{
                     const testId = context.slice(5);
-                    probeEl = document.getElementById(`probe-${{testId}}-${{probeId}}`);
-                    if (probeEl) {{
-                        probeEl.setAttribute('data-resolved', 'true');
-                        probeEl.classList.add('resolved-item');
-                        const testId2 = probeEl.getAttribute('data-test-id');
-                        if (testId2) updateBadge(testId2);
-                    }}
-                }} else if (context === 'code') {{
-                    probeEl = document.getElementById(`code-probe-${{probeId}}`);
-                    if (probeEl) {{
-                        probeEl.setAttribute('data-resolved', 'true');
-                        probeEl.classList.add('resolved-item');
-                        // find methodId from the parent list id
-                        const list = probeEl.closest('ul');
-                        if (list) {{
-                            const methodId = list.id.replace('list-code-t2-', '');
-                            updateCodeBadge(methodId);
+                    const probeEl = document.getElementById(`probe-${{testId}}-${{probeId}}`);
+                    resolveProbeEl(probeEl);
+
+                    // Cascade: resolve the same probe in every other test that holds it
+                    document.querySelectorAll(`li[data-probe-id="${{probeId}}"]`).forEach(el => {{
+                        if (el.id.startsWith('code-probe-')) return;
+                        resolveProbeEl(el);
+                        const otherTestId = el.getAttribute('data-test-id');
+                        if (otherTestId) {{
+                            flipBtn(document.querySelector(`button[data-resolve-test="${{probeId}}-${{otherTestId}}"]`));
                         }}
+                    }});
+
+                    // Cascade: also resolve the Probe-Centric ledger row
+                    const ledgerRow = document.getElementById(`ledger-row-${{probeId}}`);
+                    if (ledgerRow && ledgerRow.getAttribute('data-resolved') !== 'true') {{
+                        ledgerRow.setAttribute('data-resolved', 'true');
+                        ledgerRow.style.opacity = '0.6';
+                        const badge = document.getElementById(`ledger-badge-${{probeId}}`);
+                        if (badge) {{ badge.className = 'badge badge-success'; badge.style.cssText = ''; badge.innerText = 'Fixed'; }}
+                        flipBtn(document.querySelector(`button[data-resolve-ledger="${{probeId}}"]`));
                     }}
+
+                }} else if (context === 'code') {{
+                    const probeEl = document.getElementById(`code-probe-${{probeId}}`);
+                    resolveProbeEl(probeEl);
+                    if (probeEl) {{
+                        const list = probeEl.closest('ul');
+                        if (list) updateCodeBadge(list.id.replace('list-code-t2-', ''));
+                    }}
+
                 }} else if (context === 'ledger') {{
                     const row = document.getElementById(`ledger-row-${{probeId}}`);
                     if (row) {{
                         row.setAttribute('data-resolved', 'true');
                         row.style.opacity = '0.6';
                         const badge = document.getElementById(`ledger-badge-${{probeId}}`);
-                        if (badge) {{
-                            badge.className = 'badge badge-success';
-                            badge.style.cssText = '';
-                            badge.innerText = 'Fixed';
-                        }}
+                        if (badge) {{ badge.className = 'badge badge-success'; badge.style.cssText = ''; badge.innerText = 'Fixed'; }}
                     }}
                 }}
 
-                // Flip the button to a "fixed" state
-                btn.innerHTML = 'Fixed';
-                btn.classList.add('is-resolved');
-                btn.disabled = true;
-                btn.onclick = null;
-
+                flipBtn(btn);
                 saveState();
             }}
 
@@ -1605,11 +1787,11 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             <div id="metrics-test" class="metrics-container active">
                 <div class="metric-card">
                     <div class="metric-value" id="ui-t1-inbox">{total_t1_unreviewed} / {total_t1_unreviewed}</div>
-                    <div class="metric-label">Critical Survivals (PASS)</div>
+                    <div class="metric-label">Unreviewed Survivals</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-value" id="ui-t1-action">0</div>
-                    <div class="metric-label">Confirmed Vulnerabilities</div>
+                    <div class="metric-label">Confirmed Weak Tests</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-value" id="ui-t1-noise">0</div>
@@ -1623,20 +1805,20 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
             <div id="metrics-probe" class="metrics-container">
                 <div class="metric-card">
-                    <div class="metric-value">{metrics['evaluated']}</div>
-                    <div class="metric-label">Dynamic Targets Executed</div>
+                    <div class="metric-value">{metrics['total_discovered']}</div>
+                    <div class="metric-label">Total Probes</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-value">{metrics['score']:.2f}%</div>
-                    <div class="metric-label">Fault Detection Rate</div>
+                    <div class="metric-value">{metrics['clean_kills']}</div>
+                    <div class="metric-label">Clean Kills</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-value">{metrics['clean_kill']:.2f}%</div>
-                    <div class="metric-label">Assertion Adequacy</div>
+                    <div class="metric-value">{metrics['dirty_kills']}</div>
+                    <div class="metric-label">Dirty Kills / Timeouts</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-value">{metrics['brittle']}</div>
-                    <div class="metric-label">Brittle Executions</div>
+                    <div class="metric-value">{metrics['survivals']}</div>
+                    <div class="metric-label">Survivals (Unprotected)</div>
                 </div>
             </div>
 
@@ -1660,23 +1842,23 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             </div>
 
             <div class="tabs">
-                <div class="tab active" onclick="switchTab('test-view')">Test Quality</div>
-                <div class="tab" onclick="switchTab('probe-view')">Vulnerability Ledger</div>
-                <div class="tab" onclick="switchTab('code-view')">Robustness Radar</div>
+                <div class="tab active" onclick="switchTab('test-view')">Test-Centric</div>
+                <div class="tab" onclick="switchTab('probe-view')">Probe-Centric</div>
+                <div class="tab" onclick="switchTab('code-view')">Code-Centric</div>
             </div>
 
             <div id="test-view" class="tab-content active">
                 <div class="tab-header">
-                    <h2>Test Quality</h2>
-                    <p>Click any test row to expand and triage unresolved perturbations. Deep-links open classes directly in your IDE.</p>
+                    <h2>Test-Centric</h2>
+                    <p>Every test, its full probe footprint, and triage status. Expand a row to review and classify surviving probes.</p>
                 </div>
                 <div class="table-container">
                     <table>
                         <thead>
                             <tr>
                                 <th>Test Name</th>
-                                <th class="text-center" style="width: 200px;">Probes Executed</th>
-                                <th class="text-right" style="width: 320px;">Triage Status</th>
+                                <th class="text-center" style="width: 100px;">Footprint</th>
+                                <th class="text-right" style="width: 260px;">Triage Status</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1688,8 +1870,8 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
             <div id="probe-view" class="tab-content">
                 <div class="tab-header">
-                    <h2>Vulnerability Ledger</h2>
-                    <p>The global status of every injected fault. Discover completely unprotected probes to write new unit tests.</p>
+                    <h2>Probe-Centric</h2>
+                    <p>Every injected probe, its outcome, and how many tests witnessed it. Un-hit probes indicate dead or unreachable code.</p>
                 </div>
                 <div style="padding: 0;">
                     {ledger_html}
@@ -1698,8 +1880,8 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
             <div id="code-view" class="tab-content">
                 <div class="tab-header">
-                    <h2>Robustness Radar</h2>
-                    <p>Make production code defensive against illegal states. Grouped by target method, showing execution crashes (Tier 2).</p>
+                    <h2>Code-Centric</h2>
+                    <p>Production code that crashes when perturbed. Grouped by method; each probe shows the full per-test outcome breakdown.</p>
                 </div>
                 <div class="table-container">
                     <table>
@@ -1856,18 +2038,22 @@ def main():
         dynamic_timeout = max(discovery_duration * 2.0, 10.0)
         log_file.write(f"Set strict timeout limit for evaluations: {dynamic_timeout:.2f} seconds\n")
 
-        tier1_survived = 0
-        tier2_error = 0
-        tier3_assert = 0
-        timeouts_count = skipped_count = errors_count = unknown_errors = 0
-        global_tests_passed = 0
-        global_tests_failed = 0
+        # ── Master probe registry — every discovered probe lives here ──
+        # status: 'Un-hit' | 'Survived' | 'Clean Kill' | 'Dirty Kill' | 'TIMEOUT'
+        # test_outcomes maps test_name -> 'clean' | 'dirty' | 'survived' | 'timeout'
+        master_probes = {}
+        for pid, probe_desc in sorted(probes.items()):
+            mod, fqcn, m_name = parse_probe(probe_desc)
+            master_probes[pid] = {
+                'id': pid, 'desc': probe_desc, 'fqcn': fqcn, 'method': m_name,
+                'status': 'Un-hit', 'test_outcomes': {}
+            }
 
-        dashboard_tests = defaultdict(lambda: {'hit': 0, 'caught': 0, 'probes': []})
+        dashboard_tests = defaultdict(lambda: {'probes': []})
         dashboard_methods = defaultdict(lambda: {'fqcn': '', 'method': '', 'tests': set(), 'probes': []})
-        dashboard_ledger = []
 
-        global_tier3_probes = {}
+        global_tier3_probes = {}   # probe_id -> first test that clean-killed it
+        errors_count = skipped_count = 0
 
         total_probes = len(probes)
         current_probe_idx = 0
@@ -1878,156 +2064,165 @@ def main():
             log_file.write(f"\nProbe {pid}: {probe_desc}\n")
 
             tests = hits.get(pid)
+            mp = master_probes[pid]
+            fqcn = mp['fqcn']
+            m_name = mp['method']
+            mod = parse_probe(probe_desc)[0]
 
             if not tests:
                 log_file.write("  SKIP: No tests hit this probe\n")
                 skipped_count += 1
+                # Un-hit stays as-is; still visible in probe-centric tab
                 continue
 
             sorted_tests = sorted(tests)
-            mod, fqcn, m_name = parse_probe(probe_desc)
 
-            test_results_dict, p_count, f_count, is_timeout, actions_map = evaluate(pid, tests, project_dir, agent_jar,
-                                                                                    target_package, dynamic_timeout,
-                                                                                    log_file)
-
-            for t in tests:
-                dashboard_tests[t]['hit'] += 1
-
-            best_tier = 1
+            test_results_dict, p_count, f_count, is_timeout, actions_map = evaluate(
+                pid, tests, project_dir, agent_jar, target_package, dynamic_timeout, log_file
+            )
 
             if is_timeout:
-                timeouts_count += 1
-                tier2_error += 1
-                global_tests_failed += len(tests)
-                best_tier = 2
+                # Mark all touching tests as timeout
+                for t in sorted_tests:
+                    mp['test_outcomes'][t] = 'timeout'
+                mp['status'] = 'TIMEOUT'
 
                 method_key = f"{fqcn}#{m_name}"
                 dashboard_methods[method_key]['fqcn'] = fqcn
                 dashboard_methods[method_key]['method'] = m_name
                 dashboard_methods[method_key]['tests'].update(tests)
                 dashboard_methods[method_key]['probes'].append({
-                    'id': pid, 'desc': probe_desc, 'tests': sorted_tests, 'status': 'FAIL (TIMEOUT)',
-                    'actions': ['Infinite Loop / Timeout'], 'exceptions': ['TIMEOUT: Execution exceeded time limit']
+                    'id': pid, 'desc': probe_desc, 'tests': sorted_tests,
+                    'actions': ['Infinite Loop / Timeout'],
+                    'exceptions': ['TIMEOUT: Execution exceeded time limit']
                 })
+
             elif test_results_dict:
-                global_tests_passed += p_count
-                global_tests_failed += f_count
-
-                has_assert = False
-                has_exception = False
-                has_pass = False
-
                 probe_exceptions = set()
+                has_clean = has_dirty = has_survived = False
 
                 for t_name, status in test_results_dict.items():
                     s_up = status.upper()
-                    t_tier = 1
+                    t_actions = actions_map.get(t_name, [])
 
                     if "FAIL" in s_up:
                         if "ASSERT" in s_up or "COMPARISON" in s_up or "MULTIPLEFAILURES" in s_up:
-                            has_assert = True
-                            t_tier = 3
-                            dashboard_tests[t_name]['caught'] += 1
+                            # Clean kill — assertion-level failure
+                            mp['test_outcomes'][t_name] = 'clean'
+                            has_clean = True
                             if pid not in global_tier3_probes:
                                 global_tier3_probes[pid] = t_name
+                            dashboard_tests[t_name]['probes'].append({
+                                'id': pid, 'desc': probe_desc, 'status': status,
+                                'tier': 3, 'actions': t_actions
+                            })
                         else:
-                            has_exception = True
-                            t_tier = 2
-
+                            # Dirty kill — exception-level failure
+                            mp['test_outcomes'][t_name] = 'dirty'
+                            has_dirty = True
                             clean_exc = status.replace("FAIL (", "").rstrip(")") if status.startswith("FAIL (") else status
                             probe_exceptions.add(clean_exc)
-
+                            # Also record for test-centric tab (so footprint is complete)
+                            dashboard_tests[t_name]['probes'].append({
+                                'id': pid, 'desc': probe_desc, 'status': status,
+                                'tier': 2, 'actions': t_actions
+                            })
                     elif "PASS" in s_up:
-                        has_pass = True
-
-                    t_actions = actions_map.get(t_name, [])
-
-                    if t_tier != 2:
+                        mp['test_outcomes'][t_name] = 'survived'
+                        has_survived = True
                         dashboard_tests[t_name]['probes'].append({
-                            'id': pid, 'desc': probe_desc, 'status': status, 'tier': t_tier, 'actions': t_actions
+                            'id': pid, 'desc': probe_desc, 'status': status,
+                            'tier': 1, 'actions': t_actions
                         })
 
-                if has_assert:
-                    tier3_assert += 1
-                    best_tier = 3
-                elif has_exception:
-                    tier2_error += 1
-                    best_tier = 2
+                # Determine overall probe status
+                if has_clean:
+                    mp['status'] = 'Clean Kill'
+                elif has_dirty:
+                    mp['status'] = 'Dirty Kill'
+                elif has_survived:
+                    mp['status'] = 'Survived'
 
+                # Feed Code-Centric tab for dirty-kill probes
+                if has_dirty and not has_clean:
                     method_key = f"{fqcn}#{m_name}"
                     dashboard_methods[method_key]['fqcn'] = fqcn
                     dashboard_methods[method_key]['method'] = m_name
                     dashboard_methods[method_key]['tests'].update(tests)
-
                     rep_actions = actions_map.get(sorted_tests[0], []) if sorted_tests else []
-
                     dashboard_methods[method_key]['probes'].append({
-                        'id': pid, 'desc': probe_desc, 'tests': sorted_tests, 'actions': rep_actions,
+                        'id': pid, 'desc': probe_desc, 'tests': sorted_tests,
+                        'actions': rep_actions,
                         'exceptions': sorted(list(probe_exceptions))
                     })
-                elif has_pass:
-                    tier1_survived += 1
-                    best_tier = 1
-                else:
-                    unknown_errors += 1
             else:
                 errors_count += 1
 
-            if not is_timeout and test_results_dict and best_tier != 2:
+        # ── Build dashboard_ledger from master_probes ──────────────────
+        dashboard_ledger = []
+        for pid, mp in sorted(master_probes.items(), key=lambda x: -len(x[1]['test_outcomes'])):
+            if mp['status'] in ('Survived', 'Clean Kill'):
+                tier = 1 if mp['status'] == 'Survived' else 3
                 dashboard_ledger.append({
-                    'id': pid,
-                    'desc': probe_desc,
-                    'fqcn': fqcn,
-                    'method': m_name,
-                    'tests': sorted_tests,
-                    'tier': best_tier
+                    'id': mp['id'], 'desc': mp['desc'], 'fqcn': mp['fqcn'],
+                    'method': mp['method'],
+                    'tests': sorted(mp['test_outcomes'].keys()),
+                    'tier': tier
                 })
 
-        total_duration = time.time() - script_start
-        total_scored = tier1_survived + tier2_error + tier3_assert
-        total_tests_executed = global_tests_passed + global_tests_failed
+        # ── Absolute probe metrics ─────────────────────────────────────
+        total_discovered  = len(master_probes)
+        total_unhit       = sum(1 for mp in master_probes.values() if mp['status'] == 'Un-hit')
+        total_executed    = total_discovered - total_unhit
+        clean_kills_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Clean Kill')
+        dirty_kills_count = sum(1 for mp in master_probes.values() if mp['status'] in ('Dirty Kill', 'TIMEOUT'))
+        survivals_count   = sum(1 for mp in master_probes.values() if mp['status'] == 'Survived')
 
-        perturbation_score = ((tier2_error + tier3_assert) / total_scored * 100) if total_scored > 0 else 0.0
-        clean_kill_ratio = (tier3_assert / total_scored * 100) if total_scored > 0 else 0.0
-        unified_test_fail_rate = (global_tests_failed / total_tests_executed * 100) if total_tests_executed > 0 else 0.0
+        # ── Per-test summary for Test-Centric tab ──────────────────────
+        test_summary = {}   # test_name -> {clean, dirty, survived, vulnerable}
+        for pid, mp in master_probes.items():
+            for t_name, outcome in mp['test_outcomes'].items():
+                if t_name not in test_summary:
+                    test_summary[t_name] = {'clean': 0, 'dirty': 0, 'survived': 0}
+                test_summary[t_name][outcome if outcome in ('clean', 'dirty', 'survived') else 'dirty'] += 1
+        for t_name, s in test_summary.items():
+            s['vulnerable'] = s['survived'] > 0
+
+        vulnerable_tests_count = sum(1 for s in test_summary.values() if s['vulnerable'])
+
+        total_duration = time.time() - script_start
 
         analytics_text = f"""
         {'=' * 60}
                          FINAL ANALYTICS
         {'=' * 60}
-        Total Probes Discovered : {len(probes)}
-        Probes Evaluated        : {total_scored}
-        Probes Skipped (No Hit) : {skipped_count}
-        Errors (No Outcomes)    : {errors_count + unknown_errors}
+        Total Probes Discovered : {total_discovered}
+        Probes Executed         : {total_executed}
+        Un-hit / Dead Code      : {total_unhit}
+        Errors (No Outcomes)    : {errors_count}
         {'-' * 60}
-        PERTURBATION RESOLUTION TIERS:
-        Tier 1 (PASS)           : {tier1_survived} (Perturbation Survived)
-        Tier 2 (FAIL Exception) : {tier2_error} (Execution Error / Timeout)
-        Tier 3 (FAIL Assert)    : {tier3_assert} (Semantic Failure)
+        PROBE OUTCOMES:
+        Clean Kills             : {clean_kills_count}
+        Dirty Kills / Timeouts  : {dirty_kills_count}
+        Survived (Vulnerability): {survivals_count}
         {'-' * 60}
-        TEST EXECUTION METRICS:
-        Total Tests Executed    : {total_tests_executed}
-        Tests Passed            : {global_tests_passed}
-        Tests Failed            : {global_tests_failed}
-        Unified Test Fail Rate  : {unified_test_fail_rate:.2f}%
-        {'-' * 60}
-        Overall Perturbation Score : {perturbation_score:.2f}% (Tiers 2 & 3)
-        Clean Kill Ratio           : {clean_kill_ratio:.2f}% (Tier 3 only)
+        VULNERABLE TESTS        : {vulnerable_tests_count}
         {'=' * 60}
         """
         log_file.write(analytics_text + "\n")
 
         metrics = {
-            'score': perturbation_score,
-            'clean_kill': clean_kill_ratio,
-            'fail_rate': unified_test_fail_rate,
-            'evaluated': total_scored,
-            'brittle': tier2_error
+            'total_discovered':  total_discovered,
+            'total_unhit':       total_unhit,
+            'total_executed':    total_executed,
+            'clean_kills':       clean_kills_count,
+            'dirty_kills':       dirty_kills_count,
+            'survivals':         survivals_count,
+            'vulnerable_tests':  vulnerable_tests_count,
         }
 
-        html_file = generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, dashboard_tests, metrics,
-                                       global_tier3_probes)
+        html_file = generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, dashboard_tests,
+                                       test_summary, metrics, global_tier3_probes, master_probes)
 
         log_file.write(f"\nDashboard generated at: {html_file}\n")
         print(f"\nDashboard generated at: {html_file}")

@@ -8,6 +8,7 @@ import java.lang.instrument.Instrumentation;
 import java.security.ProtectionDomain;
 import java.util.List;
 
+import static net.bytebuddy.matcher.ElementMatchers.nameContains;
 import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 
 public class InstrumentationController {
@@ -36,7 +37,13 @@ public class InstrumentationController {
                         .or(nameStartsWith("org.tracking."))
                         .or(nameStartsWith("org.utils."))
                         .or(nameStartsWith("org.instrumentation."))
-                        .or(nameStartsWith("org.agent.")))
+                        .or(nameStartsWith("org.agent."))
+                        .or(nameStartsWith("org.mockito"))
+                        .or(nameContains("MockitoMock"))
+                        .or(nameContains("EnhancerByCGLIB"))
+                        .or(nameContains("FastClassByCGLIB"))
+                        .or(nameStartsWith("org.jacoco"))
+                        .or(nameContains("$jacoco")))
                 .type((typeDesc, classLoader, module, classBeingRedefined, pd) -> {
                     if (typeDesc.isInterface() || typeDesc.isAnnotation() || typeDesc.isEnum()) {
                         return false;
