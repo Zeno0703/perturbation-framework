@@ -278,11 +278,50 @@ def build_ledger_html(master_probes, project_dir):
 
 
 # ---------------------------------------------------------------------------
-# Test-Centric tab builder
+# Test-Centric tab builder  — VIRTUALISED
 # ---------------------------------------------------------------------------
 
+def _build_probe_json_record(p, global_tier3_probes, project_dir):
+    """Serialise one probe into a compact JSON-safe dict for the data-probes attribute."""
+    mod, fqcn, m_name = parse_probe(p['desc'])
+
+    if p['tier'] == 3:
+        bucket = 't3'
+    elif p['tier'] == 2:
+        bucket = 't2'
+    elif p['id'] in global_tier3_probes:
+        bucket = 'covered'
+    else:
+        bucket = 't1'
+
+    rec = {
+        'id':         p['id'],
+        'desc':       p['desc'],
+        'tier':       p['tier'],
+        'bucket':     bucket,
+        'fqcn':       fqcn,
+        'method':     m_name,
+        'mod':        mod,
+        'actions':    p.get('actions', []),
+        'exceptions': p.get('exceptions', []),
+        'targetLink': to_idea_link(project_dir, fqcn, is_test=False),
+        'warning':    get_warning(mod, m_name),
+    }
+    if bucket == 'covered':
+        saviour = global_tier3_probes.get(p['id'], 'Another Test')
+        rec['saviour']       = saviour
+        rec['saviourClass']  = saviour.split('#')[0]
+        rec['saviourMethod'] = saviour.split('#')[1] if '#' in saviour else 'unknown'
+    return rec
+
+
 def build_test_rows(test_stats, test_summary, global_tier3_probes, project_dir):
-    """Build all test row HTML for the Test-Centric tab.
+    """Build skeleton HTML rows for the Test-Centric tab (virtual probe rendering).
+
+    Each detail <tr> carries a ``data-probes`` attribute containing a JSON array
+    of compact probe records.  No <li> elements are written into the HTML — the
+    JS ``renderProbes()`` function stamps them on demand when the row expands and
+    ``destroyProbes()`` tears them down on collapse.
 
     Returns (test_rows_html, total_tests, total_t1_unreviewed, fully_triaged_tests).
     """
@@ -294,41 +333,36 @@ def build_test_rows(test_stats, test_summary, global_tier3_probes, project_dir):
 
     valid_sorted_tests = []
     for test_name, stats in sorted(test_stats.items(), key=lambda x: x[0]):
-        t1 = []
-        t2_exceptions = []
-        t3 = []
-        t_covered = []
-
-        for p in stats['probes']:
-            if p['tier'] == 3:
-                t3.append(p)
-            elif p['tier'] == 2:
-                t2_exceptions.append(p)
-            elif p['id'] in global_tier3_probes:
-                p['saviour'] = global_tier3_probes[p['id']]
-                t_covered.append(p)
-            elif p['tier'] == 1:
-                t1.append(p)
-
-        total_footprint = len(t1) + len(t2_exceptions) + len(t3) + len(t_covered)
+        probe_records = [
+            _build_probe_json_record(p, global_tier3_probes, project_dir)
+            for p in stats['probes']
+        ]
+        t1_count      = sum(1 for r in probe_records if r['bucket'] == 't1')
+        t2_count      = sum(1 for r in probe_records if r['bucket'] == 't2')
+        t3_count      = sum(1 for r in probe_records if r['bucket'] == 't3')
+        covered_count = sum(1 for r in probe_records if r['bucket'] == 'covered')
+        total_footprint = t1_count + t2_count + t3_count + covered_count
         if total_footprint == 0:
             continue
-
-        valid_sorted_tests.append((test_name, stats, t1, t2_exceptions, t3, t_covered, total_footprint))
+        valid_sorted_tests.append(
+            (test_name, stats, probe_records, t1_count, t2_count, t3_count, covered_count, total_footprint)
+        )
 
     valid_sorted_tests.sort(key=test_sort_key)
 
-    total_tests = len(valid_sorted_tests)
-    total_t1_unreviewed = 0
-    fully_triaged_tests = 0
-    test_rows = ""
+    total_tests          = len(valid_sorted_tests)
+    total_t1_unreviewed  = 0
+    fully_triaged_tests  = 0
+    test_rows            = ""
 
-    for test_name, stats, t1, t2_exceptions, t3, t_covered, total_footprint in valid_sorted_tests:
-        safe_id = sanitize_id(test_name)
-        unreviewed_count = len(t1)
+    for (test_name, stats, probe_records,
+         t1_count, t2_count, t3_count, covered_count, total_footprint) in valid_sorted_tests:
+
+        safe_id          = sanitize_id(test_name)
+        unreviewed_count = t1_count
         total_t1_unreviewed += unreviewed_count
 
-        ts = test_summary.get(test_name, {'clean': 0, 'dirty': 0, 'survived': 0})
+        ts         = test_summary.get(test_name, {'clean': 0, 'dirty': 0, 'survived': 0})
         n_clean    = ts['clean']
         n_dirty    = ts['dirty']
         n_survived = ts['survived']
@@ -351,211 +385,113 @@ def build_test_rows(test_stats, test_summary, global_tier3_probes, project_dir):
         if not footprint_badges:
             footprint_badges = f'<span style="{_dot}background:#f1f5f9;color:var(--text-muted);border:1px solid var(--border-strong);" title="Total probes">{total_footprint}</span>'
 
-        badge_html = status_pill
-
-        test_class = test_name.split('#')[0]
+        test_class  = test_name.split('#')[0]
         test_method = test_name.split('#')[1] if '#' in test_name else "unknown"
-        test_link = to_idea_link(project_dir, test_class, is_test=True)
+        test_link   = to_idea_link(project_dir, test_class, is_test=True)
 
         display_test_class = test_class.split('.')[-1]
-        display_test_name = f"{display_test_class}.{test_method}()" if test_method != "unknown" else display_test_class
+        display_test_name  = f"{display_test_class}.{test_method}()" if test_method != "unknown" else display_test_class
 
-        inner_html = f"<div class='test-details'>"
+        # Serialise probe data — JSON embedded in a double-quoted HTML attribute
+        probes_json = json.dumps(probe_records, ensure_ascii=True)
+        probes_attr = probes_json.replace('&', '&amp;').replace('"', '&quot;')
 
-        if t1:
+        # ── Skeleton inner HTML: section headers + empty <ul> containers only ──
+        inner_html = "<div class='test-details'>"
+
+        if t1_count:
             inner_html += f"""
-            <div style='margin-bottom: 16px; padding: 10px 14px; background: #f8fafc; border: 1px solid var(--border-color); border-radius: var(--radius-md); display: flex; align-items: center; gap: 12px; justify-content: space-between;'>
-                <span style='font-size: 12px; color: var(--text-muted);'>
-                    <strong style='color: var(--text-main);'>Utilities</strong> &mdash; Heuristic tools to reduce triage fatigue.
+            <div style='margin-bottom:16px;padding:10px 14px;background:#f8fafc;border:1px solid var(--border-color);border-radius:var(--radius-md);display:flex;align-items:center;gap:12px;justify-content:space-between;'>
+                <span style='font-size:12px;color:var(--text-muted);'>
+                    <strong style='color:var(--text-main);'>Utilities</strong> &mdash; Heuristic tools to reduce triage fatigue.
                 </span>
-                <button class='btn-small' style='border-style: dashed; color: var(--text-muted); flex-shrink: 0;'
+                <button class='btn-small' style='border-style:dashed;color:var(--text-muted);flex-shrink:0;'
                     title='Group all unreviewed probes by target class and bulk-triage them as Out of Scope.'
                     onclick="event.stopPropagation(); openBulkTriageModal('{safe_id}', '{escape_js(test_class)}')">
                     🧹 Bulk Triage (By Target)
                 </button>
             </div>
-            """
+            <div class='details-section'>
+                <div class='details-title text-danger accordion-header' onclick="toggleAccordion('content-t1-{safe_id}','icon-t1-{safe_id}')">
+                    <span><span id='icon-t1-{safe_id}' class='accordion-icon'>▼</span> Survived (Failed to Catch) <span id='count-t1-{safe_id}'>[{t1_count} Probes]</span></span>
+                </div>
+                <div id='content-t1-{safe_id}' style='display:block;'>
+                    <ul class='details-list' id='list-t1-{safe_id}'></ul>
+                </div>
+            </div>"""
 
-        if t1:
+        if t2_count:
             inner_html += f"""
             <div class='details-section'>
-                <div class='details-title text-danger accordion-header' onclick="toggleAccordion('content-t1-{safe_id}', 'icon-t1-{safe_id}')">
-                    <span><span id='icon-t1-{safe_id}' class='accordion-icon'>▼</span> Survived (Failed to Catch) <span id='count-t1-{safe_id}'>[{len(t1)} Probes]</span></span>
+                <div class='details-title text-warning accordion-header' onclick="toggleAccordion('content-t2-{safe_id}','icon-t2-{safe_id}')">
+                    <span><span id='icon-t2-{safe_id}' class='accordion-icon'>▶</span> Exception Crashes (Dirty Kills) <span id='count-t2-{safe_id}'>[{t2_count} Probes]</span></span>
                 </div>
-                <div id='content-t1-{safe_id}' style='display: block;'>
-                    <ul class='details-list' id='list-t1-{safe_id}'>
-            """
-            for p in t1:
-                mod, fqcn, m_name = parse_probe(p['desc'])
-                target_link = to_idea_link(project_dir, fqcn, is_test=False)
-                action_disp = build_action_trace(p)
-
-                inner_html += f"""
-                        <li id='probe-{safe_id}-{p['id']}' data-probe-id='{p['id']}' data-test-id='{safe_id}' data-tier='1' data-state='unreviewed' data-target-fqcn='{escape_js(fqcn)}' class='probe-item' style='border-left-color: var(--danger);'>
-                            <div class='probe-meta'>
-                                <span class='probe-id'>Probe {p['id']}</span>
-                                <div class='action-group'>
-                                    <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(test_class)}', '{escape_js(test_method)}', '{escape_js(fqcn)}', '{escape_js(m_name)}')">View Source</button>
-                                    <a href="{target_link}" class="btn-small">Open Target</a>
-                                    <a href="{test_link}" class="btn-small">Open Test</a>
-                                </div>
-                            </div>
-                            <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
-                            <div class='perturb-action'>{action_disp}</div>
-                            """
-                warn = get_warning(mod, m_name)
-                inner_html += f"<div class='probe-warning'>{warn}</div>"
-                inner_html += f"""
-                            <div class='triage-actions' id='actions-{safe_id}-{p['id']}'>
-                                <button class='btn-triage btn-action' title='This test should catch this. It failed because my inputs are weak (Logical Masking) or my assertions are missing (Missing Oracle).' onclick="triageTest('{safe_id}', '{p['id']}', 'action', 'Weak Test')">Weak Test</button>
-                                <button class='btn-triage btn-noise' title='This perturbation is inherently unobservable (e.g., Math.abs()). No input will ever catch this. It is a false positive generated by the tool.' onclick="triageTest('{safe_id}', '{p['id']}', 'equivalent', 'Equivalent')">Equivalent</button>
-                                <button class='btn-triage btn-noise' title='This specific test is not the right place to catch this. (Covers both Architectural Scope and Test Setup Masking).' onclick="triageTest('{safe_id}', '{p['id']}', 'noise', 'Out of Scope')">Out of Scope</button>
-                            </div>
-                            <div id='resolve-wrap-{safe_id}-{p['id']}' style='display:none; margin: 12px -20px -18px -20px; padding: 10px 20px; background: var(--success-bg); border-top: 1px solid #a7f3d0; border-radius: 0 0 var(--radius-md) var(--radius-md);'>
-                                <button class='btn-resolve' data-resolve-test="{p['id']}-{safe_id}"
-                                    onclick="event.stopPropagation(); markResolved('{p['id']}', 'test-{safe_id}', this)">
-                                    Mark as Fixed
-                                </button>
-                                <span style='font-size:11px; color:var(--success-text); margin-left:10px;'>I have written / improved the test for this probe.</span>
-                            </div>
-                        </li>
-                        """
-            inner_html += "</ul></div></div>"
-
-        if t2_exceptions:
-            inner_html += f"""
-            <div class='details-section'>
-                <div class='details-title text-warning accordion-header' onclick="toggleAccordion('content-t2-{safe_id}', 'icon-t2-{safe_id}')">
-                    <span><span id='icon-t2-{safe_id}' class='accordion-icon'>▶</span> Exception Crashes (Dirty Kills) <span id='count-t2-{safe_id}'>[{len(t2_exceptions)} Probes]</span></span>
+                <div id='content-t2-{safe_id}' style='display:none;'>
+                    <ul class='details-list' id='list-t2-{safe_id}'></ul>
                 </div>
-                <div id='content-t2-{safe_id}' style='display: none;'>
-                    <ul class='details-list'>
-            """
-            for p in t2_exceptions:
-                mod, fqcn, m_name = parse_probe(p['desc'])
-                target_link = to_idea_link(project_dir, fqcn, is_test=False)
-                action_disp = build_action_trace(p)
-                inner_html += f"""
-                        <li class='probe-item' style='border-left-color: var(--warning); opacity:0.8;'>
-                            <div class='probe-meta'>
-                                <span class='probe-id'>Probe {p['id']}</span>
-                                <div class='action-group'>
-                                    <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(test_class)}', '{escape_js(test_method)}', '{escape_js(fqcn)}', '{escape_js(m_name)}')">View Source</button>
-                                    <a href="{target_link}" class="btn-small">Open Target</a>
-                                    <a href="{test_link}" class="btn-small">Open Test</a>
-                                </div>
-                            </div>
-                            <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
-                            <div class='perturb-action'>{action_disp}</div>
-                            <div style='margin-top:8px; font-size:12px; color:var(--warning-text); background:var(--warning-bg); padding:7px 12px; border-radius:var(--radius-sm); border:1px solid #fde68a;'>
-                                Exception-level crash &mdash; reviewed in <strong>Code-Centric</strong> tab.
-                            </div>
-                        </li>
-                        """
-            inner_html += "</ul></div></div>"
+            </div>"""
 
         inner_html += f"""
-        <div class='details-section' id='cascaded-section-{safe_id}' style='display: none;'>
-            <div class='details-title text-orange accordion-header' onclick="toggleAccordion('content-cascaded-{safe_id}', 'icon-cascaded-{safe_id}')">
+        <div class='details-section' id='cascaded-section-{safe_id}' style='display:none;'>
+            <div class='details-title text-orange accordion-header' onclick="toggleAccordion('content-cascaded-{safe_id}','icon-cascaded-{safe_id}')">
                 <span><span id='icon-cascaded-{safe_id}' class='accordion-icon'>▶</span> Also Needs Fixing (Seen Elsewhere) <span id='count-cascaded-{safe_id}'>[0 Probes]</span></span>
             </div>
-            <div id='content-cascaded-{safe_id}' style='display: none;'>
+            <div id='content-cascaded-{safe_id}' style='display:none;'>
                 <ul id='list-cascaded-{safe_id}' class='details-list'></ul>
             </div>
-        </div>
-        """
+        </div>"""
 
-        if t_covered:
+        if covered_count:
             inner_html += f"""
             <div class='details-section'>
-                <div class='details-title text-info accordion-header' onclick="toggleAccordion('content-tc-{safe_id}', 'icon-tc-{safe_id}')">
-                    <span><span id='icon-tc-{safe_id}' class='accordion-icon'>▶</span> Covered by Another Test <span id='count-tc-{safe_id}'>[{len(t_covered)} Probes]</span></span>
+                <div class='details-title text-info accordion-header' onclick="toggleAccordion('content-tc-{safe_id}','icon-tc-{safe_id}')">
+                    <span><span id='icon-tc-{safe_id}' class='accordion-icon'>▶</span> Covered by Another Test <span id='count-tc-{safe_id}'>[{covered_count} Probes]</span></span>
                 </div>
-                <div id='content-tc-{safe_id}' style='display: none;'>
-                    <ul class='details-list'>
-            """
-            for p in t_covered:
-                mod, fqcn, m_name = parse_probe(p['desc'])
-                target_link = to_idea_link(project_dir, fqcn, is_test=False)
-                action_disp = build_action_trace(p)
+                <div id='content-tc-{safe_id}' style='display:none;'>
+                    <ul class='details-list' id='list-tc-{safe_id}'></ul>
+                </div>
+            </div>"""
 
-                saviour_test = p.get('saviour', 'Another Test')
-                saviour_class = saviour_test.split('#')[0]
-                saviour_method = saviour_test.split('#')[1] if '#' in saviour_test else "unknown"
-
-                inner_html += f"""
-                        <li class='probe-item' style='border-left-color: var(--info);'>
-                            <div class='probe-meta'>
-                                <span class='probe-id'>Probe {p['id']}</span>
-                                <div class='action-group'>
-                                    <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(test_class)}', '{escape_js(test_method)}', '{escape_js(fqcn)}', '{escape_js(m_name)}')">View Source</button>
-                                    <a href="{target_link}" class="btn-small">Open Target</a>
-                                    <a href="{test_link}" class="btn-small">Open Test</a>
-                                </div>
-                            </div>
-                            <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
-                            <div class='perturb-action'>{action_disp}</div>
-                            <div class='saviour-box'>
-                                <span class='text-muted font-medium'>Safely caught by:</span> <a href="#" onclick="event.stopPropagation(); openCodeModal('{escape_js(saviour_class)}', '{escape_js(saviour_method)}', null, null); return false;" class="saviour-link">{escape_html(saviour_test)}</a>
-                            </div>
-                        </li>
-                        """
-            inner_html += "</ul></div></div>"
-
-        if t3:
+        if t3_count:
             inner_html += f"""
             <div class='details-section'>
-                <div class='details-title text-success accordion-header' onclick="toggleAccordion('content-t3-{safe_id}', 'icon-t3-{safe_id}')">
-                    <span><span id='icon-t3-{safe_id}' class='accordion-icon'>▶</span> Semantic Failures (Clean Kills) <span id='count-t3-{safe_id}'>[{len(t3)} Probes]</span></span>
+                <div class='details-title text-success accordion-header' onclick="toggleAccordion('content-t3-{safe_id}','icon-t3-{safe_id}')">
+                    <span><span id='icon-t3-{safe_id}' class='accordion-icon'>▶</span> Semantic Failures (Clean Kills) <span id='count-t3-{safe_id}'>[{t3_count} Probes]</span></span>
                 </div>
-                <div id='content-t3-{safe_id}' style='display: none;'>
-                    <ul class='details-list'>
-            """
-            for p in t3:
-                mod, fqcn, m_name = parse_probe(p['desc'])
-                target_link = to_idea_link(project_dir, fqcn, is_test=False)
-                action_disp = build_action_trace(p)
-
-                inner_html += f"""
-                        <li class='probe-item' style='border-left-color: var(--success);'>
-                            <div class='probe-meta'>
-                                <span class='probe-id'>Probe {p['id']}</span>
-                                <div class='action-group'>
-                                    <button class="btn-small" onclick="event.stopPropagation(); openCodeModal('{escape_js(test_class)}', '{escape_js(test_method)}', '{escape_js(fqcn)}', '{escape_js(m_name)}')">View Source</button>
-                                    <a href="{target_link}" class="btn-small">Open Target</a>
-                                    <a href="{test_link}" class="btn-small">Open Test</a>
-                                </div>
-                            </div>
-                            <div class='probe-desc scrollable-text'>{escape_html(p['desc'])}</div>
-                            <div class='perturb-action'>{action_disp}</div>
-                        </li>
-                        """
-            inner_html += "</ul></div></div>"
+                <div id='content-t3-{safe_id}' style='display:none;'>
+                    <ul class='details-list' id='list-t3-{safe_id}'></ul>
+                </div>
+            </div>"""
 
         inner_html += f"""
-        <div class='details-section' id='noise-section-{safe_id}' style='display: none;'>
-            <div class='details-title text-muted accordion-header' onclick="toggleAccordion('content-noise-{safe_id}', 'icon-noise-{safe_id}')">
+        <div class='details-section' id='noise-section-{safe_id}' style='display:none;'>
+            <div class='details-title text-muted accordion-header' onclick="toggleAccordion('content-noise-{safe_id}','icon-noise-{safe_id}')">
                 <span><span id='icon-noise-{safe_id}' class='accordion-icon'>▶</span> Filtered Noise <span id='count-noise-{safe_id}'>[0 Probes]</span></span>
             </div>
-            <div id='content-noise-{safe_id}' style='display: none;'>
+            <div id='content-noise-{safe_id}' style='display:none;'>
                 <ul id='list-noise-{safe_id}' class='details-list'></ul>
             </div>
         </div>
-        </div>
-        """
+        </div>"""
 
         test_rows += f"""
-        <tr class="clickable-row" onclick="toggleRow(event, 'desc-{safe_id}')">
+        <tr class="clickable-row"
+            data-safe-id="{safe_id}"
+            data-test-class="{escape_html(test_class)}"
+            data-test-method="{escape_html(test_method)}"
+            data-test-link="{escape_html(test_link)}"
+            onclick="toggleRow(event, '{safe_id}')">
             <td class="font-medium text-main">
-                <div style="display: flex; justify-content: space-between; align-items: center; gap: 20px;">
-                    <div class="scrollable-text code-font" style="font-weight: 600;">{display_test_name}</div>
-                    <span class="expand-hint" style="flex-shrink: 0;">Show details ▼</span>
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:20px;">
+                    <div class="scrollable-text code-font" style="font-weight:600;">{display_test_name}</div>
+                    <span class="expand-hint" style="flex-shrink:0;">Show details ▼</span>
                 </div>
             </td>
-            <td class="text-center"><div class="scrollable-text" style="text-align:center; display:flex; gap:4px; justify-content:center; align-items:center;">{footprint_badges}</div></td>
-            <td id="badge-{safe_id}" class="text-right"><div class="scrollable-text" style="text-align:right;">{badge_html}</div></td>
+            <td class="text-center"><div class="scrollable-text" style="text-align:center;display:flex;gap:4px;justify-content:center;align-items:center;">{footprint_badges}</div></td>
+            <td id="badge-{safe_id}" class="text-right"><div class="scrollable-text" style="text-align:right;">{status_pill}</div></td>
         </tr>
-        <tr id="desc-{safe_id}" class="details-row" style="display: none;">
+        <tr id="desc-{safe_id}" class="details-row" style="display:none;"
+            data-probes="{probes_attr}" data-rendered="false">
             <td colspan="3" class="p-0">{inner_html}</td>
         </tr>
         """
@@ -697,13 +633,20 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
     Returns the path to the written HTML file.
     """
-    html_path = os.path.join(project_dir, OUT_DIR, "dashboard.html")
+    out_folder = os.path.join(project_dir, OUT_DIR)
+    os.makedirs(out_folder, exist_ok=True)
+
+    html_path = os.path.join(out_folder, "dashboard.html")
+    js_cache_path = os.path.join(out_folder, "source_cache.js")
 
     all_probe_ids = sorted(master_probes.keys())
     probe_ids_json = json.dumps(all_probe_ids)
 
     file_cache = build_file_cache(project_dir, test_stats, dashboard_ledger, dashboard_methods)
     file_cache_json = json.dumps(file_cache).replace("</", "<\\/")
+
+    with open(js_cache_path, "w", encoding="utf-8") as f:
+        f.write(f"window.PERTURB_FILE_CACHE = {file_cache_json};\n")
 
     ledger_html = build_ledger_html(master_probes, project_dir)
 
@@ -911,8 +854,12 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
             .trace-exception {{ color: var(--danger); font-weight: 600; }}
         </style>
+        
+        <script src="source_cache.js"></script>
+        
         <script>
-            const fileCache = {file_cache_json};
+            const fileCache = window.PERTURB_FILE_CACHE || {{}};
+            
             window.initialT1Count = {total_t1_unreviewed};
             window.initialT2Count = {total_t2_unreviewed};
             window.totalTestCount = {total_tests};
@@ -921,26 +868,223 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             const _PROBE_IDS = {probe_ids_json};
             const _STORAGE_KEY = 'perturb_triage_' + _PROBE_IDS.slice().sort().join(',').split('').reduce((h,c)=>((h<<5)-h+c.charCodeAt(0))|0, 0);
 
-            function saveState() {{
-                const state = {{}};
-                document.querySelectorAll('li[data-probe-id]').forEach(el => {{
-                    const pid      = el.getAttribute('data-probe-id');
-                    const s        = el.getAttribute('data-state');
-                    const tid      = el.getAttribute('data-test-id');
-                    const resolved = el.getAttribute('data-resolved') === 'true';
-                    const tag      = el.querySelector('.triage-tag') ? el.querySelector('.triage-tag').innerText : null;
-                    if (s && s !== 'unreviewed') {{
-                        if (!state[pid]) state[pid] = [];
-                        state[pid].push({{ testId: tid, decision: s, tag, resolved }});
+            // ── _triageState ─────────────────────────────────────────────────────────
+            // Persists triage decisions across DOM teardowns.
+            // Shape: {{ [probeId]: {{ [testSafeId]: {{ decision, tag, resolved }} }} }}
+            const _triageState = {{}};
+
+            function _tsGet(probeId, testId) {{
+                return (_triageState[probeId] || {{}})[testId] || null;
+            }}
+            function _tsSet(probeId, testId, patch) {{
+                if (!_triageState[probeId]) _triageState[probeId] = {{}};
+                _triageState[probeId][testId] = Object.assign(_triageState[probeId][testId] || {{}}, patch);
+            }}
+
+            // ── Virtual probe rendering ───────────────────────────────────────────────
+
+            function _buildProbeItem(rec, safeId, testClass, testMethod, testLink) {{
+                const pid      = rec.id;
+                const stEntry  = _tsGet(pid, safeId);
+                const decision = stEntry ? stEntry.decision : 'unreviewed';
+                const tag      = stEntry ? stEntry.tag      : null;
+                const resolved = stEntry ? !!stEntry.resolved : false;
+
+                const li = document.createElement('li');
+                li.className  = 'probe-item';
+                li.id         = `probe-${{safeId}}-${{pid}}`;
+                li.dataset.probeId    = pid;
+                li.dataset.testId     = safeId;
+                li.dataset.tier       = rec.tier;
+                li.dataset.state      = decision;
+                li.dataset.targetFqcn = rec.fqcn || '';
+                if (resolved) {{ li.dataset.resolved = 'true'; li.classList.add('resolved-item'); }}
+
+                const borderCol = {{t1:'var(--danger)',t2:'var(--warning)',covered:'var(--info)',t3:'var(--success)'}}[rec.bucket] || 'var(--border-strong)';
+                li.style.borderLeftColor = borderCol;
+                if (decision === 'action' && rec.bucket === 't1') {{
+                    li.classList.add((tag||'').includes('(Cascaded)') ? 'cascaded-item' : 'action-required');
+                }} else if (decision === 'equivalent' || decision === 'noise') {{
+                    li.classList.add('noise-item');
+                }}
+
+                const actions = rec.actions && rec.actions.length ? rec.actions : ['State modification applied'];
+                let traceHtml = `<span class='text-muted'>Execution Trace (Hit ${{actions.length}} times):</span><br><div class='execution-trace'>`;
+                actions.forEach((act, i) => {{
+                    traceHtml += `${{i+1}}. ${{act.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}}<br>`;
+                }});
+                traceHtml += '</div>';
+
+                const jsQ = s => (s||'').replace(/[\\\\]/g,'\\\\\\\\').replace(/'/g,"\\'");
+                const esc  = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                let footerHtml = '';
+
+                if (rec.bucket === 't1') {{
+                    if (tag) {{
+                        const isCasc = (tag||'').includes('(Cascaded)');
+                        const tc = (decision==='action' && !isCasc) ? 'tag-action' : (decision==='action' ? 'tag-cascaded' : 'tag-noise');
+                        footerHtml = `<div class='triage-actions' id='actions-${{safeId}}-${{pid}}'><span class='triage-tag ${{tc}}'>[ ${{tag}} ]</span></div>`;
+                    }} else {{
+                        footerHtml = `<div class='triage-actions' id='actions-${{safeId}}-${{pid}}'>
+                            <button class='btn-triage btn-action' onclick="triageTest('${{safeId}}','${{pid}}','action','Weak Test')">Weak Test</button>
+                            <button class='btn-triage btn-noise' onclick="triageTest('${{safeId}}','${{pid}}','equivalent','Equivalent')">Equivalent</button>
+                            <button class='btn-triage btn-noise' onclick="triageTest('${{safeId}}','${{pid}}','noise','Out of Scope')">Out of Scope</button>
+                        </div>`;
+                    }}
+                    const showResolve = (decision==='action' && !(tag||'').includes('(Cascaded)') && !resolved) ? 'block' : 'none';
+                    footerHtml += `<div id='resolve-wrap-${{safeId}}-${{pid}}' style='display:${{showResolve}};margin:12px -20px -18px -20px;padding:10px 20px;background:var(--success-bg);border-top:1px solid #a7f3d0;border-radius:0 0 var(--radius-md) var(--radius-md);'>
+                        <button class='btn-resolve${{resolved?" is-resolved":""}}' ${{resolved?'disabled':''}} data-resolve-test='${{pid}}-${{safeId}}'
+                            onclick="event.stopPropagation();markResolved('${{pid}}','test-${{safeId}}',this)">
+                            ${{resolved?'Fixed':'Mark as Fixed'}}
+                        </button>
+                        <span style='font-size:11px;color:var(--success-text);margin-left:10px;'>I have written / improved the test for this probe.</span>
+                    </div>`;
+                }} else if (rec.bucket === 't2') {{
+                    footerHtml = `<div style='margin-top:8px;font-size:12px;color:var(--warning-text);background:var(--warning-bg);padding:7px 12px;border-radius:var(--radius-sm);border:1px solid #fde68a;'>
+                        Exception-level crash &mdash; reviewed in <strong>Code-Centric</strong> tab.</div>`;
+                }} else if (rec.bucket === 'covered') {{
+                    footerHtml = `<div class='saviour-box'><span class='text-muted font-medium'>Safely caught by:</span>
+                        <a href='#' onclick="event.stopPropagation();openCodeModal('${{jsQ(rec.saviourClass)}}','${{jsQ(rec.saviourMethod)}}',null,null);return false;" class='saviour-link'>${{esc(rec.saviour||'Another Test')}}</a></div>`;
+                }}
+
+                li.innerHTML = `
+                    <div class='probe-meta'>
+                        <span class='probe-id'>Probe ${{pid}}</span>
+                        <div class='action-group'>
+                            <button class="btn-small" onclick="event.stopPropagation();openCodeModal('${{jsQ(testClass)}}','${{jsQ(testMethod)}}','${{jsQ(rec.fqcn)}}','${{jsQ(rec.method)}}')">View Source</button>
+                            <a href="${{rec.targetLink}}" class="btn-small">Open Target</a>
+                            <a href="${{esc(testLink)}}" class="btn-small">Open Test</a>
+                        </div>
+                    </div>
+                    <div class='probe-desc scrollable-text'>${{esc(rec.desc)}}</div>
+                    <div class='perturb-action'>${{traceHtml}}</div>
+                    ${{rec.bucket==='t1' ? `<div class='probe-warning'>${{rec.warning}}</div>` : ''}}
+                    ${{footerHtml}}`;
+                return li;
+            }}
+
+            function renderProbes(safeId) {{
+                const detailRow = document.getElementById(`desc-${{safeId}}`);
+                if (!detailRow || detailRow.dataset.rendered === 'true') return;
+
+                const headerRow  = document.querySelector(`tr[data-safe-id="${{safeId}}"]`);
+                const testClass  = headerRow ? headerRow.dataset.testClass  : '';
+                const testMethod = headerRow ? headerRow.dataset.testMethod : '';
+                const testLink   = headerRow ? headerRow.dataset.testLink   : '#';
+
+                let probes;
+                try {{ probes = JSON.parse(detailRow.dataset.probes || '[]'); }} catch(e) {{ probes = []; }}
+
+                const lists = {{
+                    t1:       document.getElementById(`list-t1-${{safeId}}`),
+                    t2:       document.getElementById(`list-t2-${{safeId}}`),
+                    t3:       document.getElementById(`list-t3-${{safeId}}`),
+                    covered:  document.getElementById(`list-tc-${{safeId}}`),
+                    noise:    document.getElementById(`list-noise-${{safeId}}`),
+                    cascaded: document.getElementById(`list-cascaded-${{safeId}}`),
+                }};
+
+                probes.forEach(rec => {{
+                    const stEntry  = _tsGet(rec.id, safeId);
+                    const decision = stEntry ? stEntry.decision : 'unreviewed';
+                    const tag      = stEntry ? stEntry.tag      : null;
+                    const li       = _buildProbeItem(rec, safeId, testClass, testMethod, testLink);
+
+                    if (decision === 'noise' || decision === 'equivalent') {{
+                        if (lists.noise) lists.noise.appendChild(li);
+                    }} else if (decision === 'action' && rec.bucket === 't1' && (tag||'').includes('(Cascaded)')) {{
+                        if (lists.cascaded) lists.cascaded.appendChild(li);
+                    }} else {{
+                        const target = lists[rec.bucket];
+                        if (target) target.appendChild(li);
                     }}
                 }});
-                document.querySelectorAll('tr[id^="ledger-row-"][data-resolved="true"]').forEach(row => {{
-                    const pid = row.id.replace('ledger-row-', '');
-                    if (!state[pid]) state[pid] = [];
-                    const existing = state[pid].find(e => e.decision === 'ledger-resolved');
-                    if (!existing) state[pid].push({{ testId: null, decision: 'ledger-resolved', tag: null, resolved: true }});
+
+                [['noise-section','noise'],['cascaded-section','cascaded']].forEach(([secKey,listKey]) => {{
+                    const sec  = document.getElementById(`${{secKey}}-${{safeId}}`);
+                    const list = lists[listKey];
+                    if (sec && list && list.children.length) sec.style.display = 'block';
                 }});
-                try {{ localStorage.setItem(_STORAGE_KEY, JSON.stringify(state)); }} catch(e) {{}}
+
+                detailRow.dataset.rendered = 'true';
+                _syncAccordionCounts(safeId);
+            }}
+
+            function destroyProbes(safeId) {{
+                const detailRow = document.getElementById(`desc-${{safeId}}`);
+                if (!detailRow || detailRow.dataset.rendered !== 'true') return;
+                ['t1','t2','t3','tc','noise','cascaded'].forEach(sfx => {{
+                    const ul = document.getElementById(`list-${{sfx}}-${{safeId}}`);
+                    if (ul) ul.innerHTML = '';
+                }});
+                ['noise-section','cascaded-section'].forEach(sec => {{
+                    const el = document.getElementById(`${{sec}}-${{safeId}}`);
+                    if (el) el.style.display = 'none';
+                }});
+                detailRow.dataset.rendered = 'false';
+            }}
+
+            function toggleRow(event, target) {{
+                if (event.target.tagName.toLowerCase() === 'a' || event.target.tagName.toLowerCase() === 'button') return;
+                const isVirtual = !target.startsWith('ledger-desc-') && !target.startsWith('code-desc-');
+                const rowId     = isVirtual ? `desc-${{target}}` : target;
+                const row       = document.getElementById(rowId);
+                if (!row) return;
+                const isHidden = row.style.display === 'none';
+                row.style.display = isHidden ? 'table-row' : 'none';
+                if (isVirtual) {{
+                    if (isHidden) renderProbes(target);
+                    else          destroyProbes(target);
+                    const hdr = document.querySelector(`tr[data-safe-id="${{target}}"] .expand-hint`);
+                    if (hdr) hdr.innerText = isHidden ? 'Hide details ▲' : 'Show details ▼';
+                }} else {{
+                    const hdr = document.querySelector(`tr[onclick*="${{target}}"] .expand-hint`);
+                    if (hdr) hdr.innerText = isHidden ? 'Hide details ▲' : 'Show details ▼';
+                }}
+            }}
+
+            function toggleAccordion(contentId, iconId) {{
+                var content = document.getElementById(contentId);
+                var icon = document.getElementById(iconId);
+                if (content.style.display === "none") {{
+                    content.style.display = "block";
+                    icon.innerText = "▼";
+                }} else {{
+                    content.style.display = "none";
+                    icon.innerText = "▶";
+                }}
+            }}
+
+            // ── Persistence ───────────────────────────────────────────────────────────
+
+            function saveState() {{
+                const out = {{}};
+                // Test-centric: read from _triageState (covers rendered + torn-down rows)
+                Object.entries(_triageState).forEach(([pid, byTest]) => {{
+                    Object.entries(byTest).forEach(([tid, entry]) => {{
+                        if (!entry.decision || entry.decision === 'unreviewed') return;
+                        if (!out[pid]) out[pid] = [];
+                        out[pid].push({{ testId: tid, decision: entry.decision, tag: entry.tag||null, resolved: !!entry.resolved }});
+                    }});
+                }});
+                // Code-centric: always in DOM
+                document.querySelectorAll('li[id^="code-probe-"]').forEach(el => {{
+                    const pid = el.id.replace('code-probe-','');
+                    const s   = el.getAttribute('data-state');
+                    if (s && s !== 'unreviewed') {{
+                        if (!out[pid]) out[pid] = [];
+                        const tag = el.querySelector('.triage-tag');
+                        out[pid].push({{ testId:'code', decision:s, tag:tag?tag.innerText:null, resolved:el.getAttribute('data-resolved')==='true' }});
+                    }}
+                }});
+                // Ledger resolved
+                document.querySelectorAll('tr[id^="ledger-row-"][data-resolved="true"]').forEach(row => {{
+                    const pid = row.id.replace('ledger-row-','');
+                    if (!out[pid]) out[pid] = [];
+                    if (!out[pid].find(e => e.decision === 'ledger-resolved'))
+                        out[pid].push({{ testId:null, decision:'ledger-resolved', tag:null, resolved:true }});
+                }});
+                try {{ localStorage.setItem(_STORAGE_KEY, JSON.stringify(out)); }} catch(e) {{}}
             }}
 
             function loadState(state) {{
@@ -948,54 +1092,58 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 Object.entries(state).forEach(([pid, entries]) => {{
                     entries.forEach(entry => {{
                         const {{ testId, decision, tag, resolved }} = entry;
-                        const tagText = tag ? tag.replace(/^\[\s*|\s*\]$/g, '') : decision;
+                        const tagText = tag ? tag.replace(/^\\[\\s*|\\s*\\]$/g,'') : decision;
                         if (decision === 'ledger-resolved') return;
                         if (decision === 'action-code' || decision === 'equivalent-code') {{
                             const el = document.getElementById(`code-probe-${{pid}}`);
                             if (el && el.getAttribute('data-state') !== decision) {{
                                 const list = el.closest('ul');
-                                const methodId = list ? list.id.replace('list-code-t2-', '') : null;
+                                const methodId = list ? list.id.replace('list-code-t2-','') : null;
                                 if (methodId) triageCode(methodId, pid, decision, tagText);
                             }}
-                        }} else if (testId) {{
-                            const el = document.getElementById(`probe-${{testId}}-${{pid}}`);
-                            if (el && el.getAttribute('data-state') === 'unreviewed') {{
-                                triageTest(testId, pid, decision, tagText);
-                            }}
+                        }} else if (testId && testId !== 'code') {{
+                            _tsSet(pid, testId, {{ decision, tag: tagText, resolved: !!resolved }});
                         }}
                     }});
                 }});
                 Object.entries(state).forEach(([pid, entries]) => {{
                     entries.forEach(entry => {{
-                        const {{ testId, decision, resolved }} = entry;
-                        if (!resolved && decision !== 'ledger-resolved') return;
+                        const {{ decision, resolved }} = entry;
+                        if (!resolved) return;
                         if (decision === 'ledger-resolved') {{
                             const btn = document.querySelector(`button[data-resolve-ledger="${{pid}}"]`);
                             if (btn) markResolved(pid, 'ledger', btn);
                         }} else if (decision === 'action-code') {{
                             const btn = document.querySelector(`button[data-resolve-code="${{pid}}"]`);
                             if (btn) markResolved(pid, 'code', btn);
-                        }} else if (testId && decision === 'action') {{
-                            const btn = document.querySelector(`button[data-resolve-test="${{pid}}-${{testId}}"]`);
-                            if (btn) markResolved(pid, `test-${{testId}}`, btn);
                         }}
                     }});
                 }});
+                document.querySelectorAll('tr[data-probes]').forEach(tr => {{
+                    _replayBadge(tr.id.replace('desc-',''));
+                }});
+                updateGlobalMetrics();
             }}
 
             function exportState() {{
-                const state = {{}};
-                document.querySelectorAll('li[data-probe-id]').forEach(el => {{
-                    const pid = el.getAttribute('data-probe-id');
+                const out = {{}};
+                Object.entries(_triageState).forEach(([pid, byTest]) => {{
+                    Object.entries(byTest).forEach(([tid, entry]) => {{
+                        if (!entry.decision || entry.decision === 'unreviewed') return;
+                        if (!out[pid]) out[pid] = [];
+                        out[pid].push({{ testId:tid, decision:entry.decision, tag:entry.tag||null, resolved:!!entry.resolved }});
+                    }});
+                }});
+                document.querySelectorAll('li[id^="code-probe-"]').forEach(el => {{
+                    const pid = el.id.replace('code-probe-','');
                     const s   = el.getAttribute('data-state');
-                    const tid = el.getAttribute('data-test-id');
-                    const tag = el.querySelector('.triage-tag') ? el.querySelector('.triage-tag').innerText : null;
                     if (s && s !== 'unreviewed') {{
-                        if (!state[pid]) state[pid] = [];
-                        state[pid].push({{ testId: tid, decision: s, tag }});
+                        if (!out[pid]) out[pid] = [];
+                        const tag = el.querySelector('.triage-tag');
+                        out[pid].push({{ testId:'code', decision:s, tag:tag?tag.innerText:null }});
                     }}
                 }});
-                const blob = new Blob([JSON.stringify({{ version: 1, probeIds: _PROBE_IDS, state }}, null, 2)], {{type: 'application/json'}});
+                const blob = new Blob([JSON.stringify({{ version:1, probeIds:_PROBE_IDS, state:out }}, null, 2)], {{type:'application/json'}});
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = 'triage-state.json';
@@ -1061,256 +1209,270 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 document.querySelectorAll('.metrics-container').forEach(m => m.classList.remove('active'));
                 document.getElementById(tabId).classList.add('active');
-                if (window.event && window.event.currentTarget) {{
-                    window.event.currentTarget.classList.add('active');
-                }}
-                if (tabId === 'test-view') {{
-                    document.getElementById('metrics-test').classList.add('active');
-                }} else if (tabId === 'probe-view') {{
-                    document.getElementById('metrics-probe').classList.add('active');
-                }} else if (tabId === 'code-view') {{
-                    document.getElementById('metrics-code').classList.add('active');
-                }}
+                if (window.event && window.event.currentTarget) window.event.currentTarget.classList.add('active');
+                if (tabId === 'test-view')       document.getElementById('metrics-test').classList.add('active');
+                else if (tabId === 'probe-view') document.getElementById('metrics-probe').classList.add('active');
+                else if (tabId === 'code-view')  document.getElementById('metrics-code').classList.add('active');
             }}
 
-            function toggleRow(event, rowId) {{
-                if (event.target.tagName.toLowerCase() === 'a' || event.target.tagName.toLowerCase() === 'button') return;
-                var row = document.getElementById(rowId);
-                var isHidden = row.style.display === "none";
-                row.style.display = isHidden ? "table-row" : "none";
-                var hintText = document.querySelector(`tr[onclick="toggleRow(event, '${{rowId}}')"] .expand-hint`);
-                if (hintText) {{
-                    hintText.innerText = isHidden ? "Hide details ▲" : "Show details ▼";
-                }}
-            }}
+            // ── Triage — test-centric ─────────────────────────────────────────────────
 
-            function toggleAccordion(contentId, iconId) {{
-                var content = document.getElementById(contentId);
-                var icon = document.getElementById(iconId);
-                if (content.style.display === "none") {{
-                    content.style.display = "block";
-                    icon.innerText = "▼";
-                }} else {{
-                    content.style.display = "none";
-                    icon.innerText = "▶";
-                }}
-            }}
+            function triageTest(safeId, probeId, decisionType, tagText) {{
+                // 1. Persist in _triageState
+                _tsSet(probeId, safeId, {{ decision: decisionType, tag: tagText }});
 
-            function triageTest(testId, probeId, decisionType, tagText) {{
-                const probeEl = document.getElementById(`probe-${{testId}}-${{probeId}}`);
-                const actionsContainer = document.getElementById(`actions-${{testId}}-${{probeId}}`);
-                let tagClass = 'tag-noise';
-                if (decisionType === 'action') tagClass = 'tag-action';
-                actionsContainer.innerHTML = `<span class="triage-tag ${{tagClass}}">[ ${{tagText}} ]</span>`;
-                probeEl.setAttribute('data-state', decisionType);
+                // 2. Apply to rendered <li> if it exists
+                const probeEl = document.getElementById(`probe-${{safeId}}-${{probeId}}`);
+                if (probeEl) _applyTriageToEl(probeEl, safeId, probeId, decisionType, tagText, false);
 
-                if (decisionType === 'action') {{
-                    probeEl.classList.add('action-required');
-                    const resolveWrap = document.getElementById(`resolve-wrap-${{testId}}-${{probeId}}`);
-                    if (resolveWrap) resolveWrap.style.display = 'block';
-                    const otherProbes = document.querySelectorAll(`li[data-probe-id="${{probeId}}"][data-state="unreviewed"]`);
-                    otherProbes.forEach(otherProbeEl => {{
-                        if (otherProbeEl.id.startsWith('code-probe-')) return;
-                        if (otherProbeEl.id !== probeEl.id) {{
-                            const otherTestId = otherProbeEl.getAttribute('data-test-id');
-                            const otherActionsContainer = document.getElementById(`actions-${{otherTestId}}-${{probeId}}`);
-                            if(otherActionsContainer) {{
-                                otherActionsContainer.innerHTML = `<span class="triage-tag tag-cascaded">[ ${{tagText}} (Cascaded) ]</span>`;
-                                otherProbeEl.setAttribute('data-state', 'action');
-                                otherProbeEl.classList.add('cascaded-item');
-                                const cascadedList = document.getElementById(`list-cascaded-${{otherTestId}}`);
-                                const cascadedContainer = document.getElementById(`cascaded-section-${{otherTestId}}`);
-                                if(cascadedContainer) cascadedContainer.style.display = 'block';
-                                if(cascadedList) cascadedList.appendChild(otherProbeEl);
-                                updateBadge(otherTestId);
-                                updateAccordionCounts(otherTestId);
-                            }}
-                        }}
+                // 3. Cross-test cascading — iterate all test rows (rendered or not)
+                if (decisionType === 'action' || decisionType === 'equivalent') {{
+                    document.querySelectorAll('tr[data-probes]').forEach(detailRow => {{
+                        const otherId = detailRow.id.replace('desc-','');
+                        if (otherId === safeId) return;
+                        let probes;
+                        try {{ probes = JSON.parse(detailRow.dataset.probes || '[]'); }} catch(e) {{ return; }}
+                        if (!probes.some(r => String(r.id) === String(probeId) && r.bucket === 't1')) return;
+                        const existing = _tsGet(probeId, otherId);
+                        if (existing && existing.decision !== 'unreviewed') return;
+                        const cascadeTag = `${{tagText}} (Cascaded)`;
+                        _tsSet(probeId, otherId, {{ decision: decisionType, tag: cascadeTag }});
+                        const otherEl = document.getElementById(`probe-${{otherId}}-${{probeId}}`);
+                        if (otherEl) _applyTriageToEl(otherEl, otherId, probeId, decisionType, cascadeTag, true);
+                        _replayBadge(otherId);
                     }});
-                    const ledgerRow = document.getElementById(`ledger-row-${{probeId}}`);
-                    const ledgerDesc = document.getElementById(`ledger-desc-${{probeId}}`);
-                    if (ledgerRow && ledgerDesc) {{
-                        const pendingTbody = document.getElementById('tbody-ledger-pending');
-                        const pendingSection = document.getElementById('section-ledger-pending');
-                        if (pendingTbody && pendingSection) {{
-                            pendingSection.style.display = 'block';
-                            pendingTbody.appendChild(ledgerRow);
-                            pendingTbody.appendChild(ledgerDesc);
-                            const ledgerBadge = document.getElementById(`ledger-badge-${{probeId}}`);
-                            if (ledgerBadge) {{
-                                ledgerBadge.className = 'badge badge-primary';
-                                ledgerBadge.innerText = 'Pending Fix';
-                            }}
-                            updateLedgerCounts();
-                        }}
-                    }}
-                }} else if (decisionType === 'equivalent') {{
-                    probeEl.classList.add('noise-item');
-                    const noiseList = document.getElementById(`list-noise-${{testId}}`);
-                    const noiseContainer = document.getElementById(`noise-section-${{testId}}`);
-                    if(noiseContainer) noiseContainer.style.display = 'block';
-                    if(noiseList) noiseList.appendChild(probeEl);
-                    const otherProbes = document.querySelectorAll(`li[data-probe-id="${{probeId}}"][data-state="unreviewed"]`);
-                    otherProbes.forEach(otherProbeEl => {{
-                        if (otherProbeEl.id.startsWith('code-probe-')) return;
-                        if (otherProbeEl.id !== probeEl.id) {{
-                            const otherTestId = otherProbeEl.getAttribute('data-test-id');
-                            const otherActionsContainer = document.getElementById(`actions-${{otherTestId}}-${{probeId}}`);
-                            if(otherActionsContainer) {{
-                                otherActionsContainer.innerHTML = `<span class="triage-tag tag-noise">[ ${{tagText}} (Cascaded) ]</span>`;
-                                otherProbeEl.setAttribute('data-state', 'equivalent');
-                                otherProbeEl.classList.add('noise-item');
-                                const otherNoiseList = document.getElementById(`list-noise-${{otherTestId}}`);
-                                const otherNoiseContainer = document.getElementById(`noise-section-${{otherTestId}}`);
-                                if(otherNoiseContainer) otherNoiseContainer.style.display = 'block';
-                                if(otherNoiseList) otherNoiseList.appendChild(otherProbeEl);
-                                updateBadge(otherTestId);
-                                updateAccordionCounts(otherTestId);
-                            }}
-                        }}
-                    }});
-                    const ledgerRow = document.getElementById(`ledger-row-${{probeId}}`);
-                    const ledgerDesc = document.getElementById(`ledger-desc-${{probeId}}`);
-                    if (ledgerRow && ledgerDesc) {{
-                        const discardedTbody = document.getElementById('tbody-ledger-discarded');
-                        const discardedSection = document.getElementById('section-ledger-discarded');
-                        if (discardedTbody && discardedSection) {{
-                            discardedSection.style.display = 'block';
-                            discardedTbody.appendChild(ledgerRow);
-                            discardedTbody.appendChild(ledgerDesc);
-                            const ledgerBadge = document.getElementById(`ledger-badge-${{probeId}}`);
-                            if (ledgerBadge) {{
-                                ledgerBadge.className = 'badge';
-                                ledgerBadge.style.cssText = 'background:#f1f5f9; color:#64748b; border:1px solid #cbd5e1;';
-                                ledgerBadge.innerText = 'Discarded';
-                            }}
-                            updateLedgerCounts();
-                        }}
-                    }}
-                }} else if (decisionType === 'noise') {{
-                    probeEl.classList.add('noise-item');
-                    const noiseList = document.getElementById(`list-noise-${{testId}}`);
-                    const noiseContainer = document.getElementById(`noise-section-${{testId}}`);
-                    if(noiseContainer) noiseContainer.style.display = 'block';
-                    if(noiseList) noiseList.appendChild(probeEl);
                 }}
-                updateBadge(testId);
-                updateAccordionCounts(testId);
+
+                // 4. Cross-tab ledger sync
+                _syncLedger(probeId, decisionType);
+                updateBadge(safeId);
                 saveState();
             }}
 
-            function markResolved(probeId, context, btn) {{
-                function resolveProbeEl(el) {{
-                    if (!el || el.getAttribute('data-resolved') === 'true') return;
-                    el.setAttribute('data-resolved', 'true');
-                    el.classList.add('resolved-item');
-                    const tid = el.getAttribute('data-test-id');
-                    if (tid) updateBadge(tid);
+            function _applyTriageToEl(li, safeId, probeId, decisionType, tagText, isCascaded) {{
+                li.dataset.state = decisionType;
+                const actDiv = document.getElementById(`actions-${{safeId}}-${{probeId}}`);
+                if (actDiv) {{
+                    const tc = (decisionType==='action' && !isCascaded) ? 'tag-action' : (decisionType==='action' ? 'tag-cascaded' : 'tag-noise');
+                    actDiv.innerHTML = `<span class='triage-tag ${{tc}}'>[ ${{tagText}} ]</span>`;
                 }}
+                li.classList.remove('action-required','cascaded-item','noise-item');
+                if (decisionType === 'action') {{
+                    if (isCascaded) {{
+                        li.classList.add('cascaded-item');
+                        const cl = document.getElementById(`list-cascaded-${{safeId}}`);
+                        const cs = document.getElementById(`cascaded-section-${{safeId}}`);
+                        if (cl) cl.appendChild(li);
+                        if (cs) cs.style.display = 'block';
+                    }} else {{
+                        li.classList.add('action-required');
+                        const rw = document.getElementById(`resolve-wrap-${{safeId}}-${{probeId}}`);
+                        if (rw) rw.style.display = 'block';
+                    }}
+                }} else {{
+                    li.classList.add('noise-item');
+                    const nl = document.getElementById(`list-noise-${{safeId}}`);
+                    const ns = document.getElementById(`noise-section-${{safeId}}`);
+                    if (nl) nl.appendChild(li);
+                    if (ns) ns.style.display = 'block';
+                }}
+                _syncAccordionCounts(safeId);
+            }}
+
+            function _syncLedger(probeId, decisionType) {{
+                const ledgerRow  = document.getElementById(`ledger-row-${{probeId}}`);
+                const ledgerDesc = document.getElementById(`ledger-desc-${{probeId}}`);
+                if (!ledgerRow || !ledgerDesc) return;
+                if (decisionType === 'action') {{
+                    const tbody = document.getElementById('tbody-ledger-pending');
+                    const sec   = document.getElementById('section-ledger-pending');
+                    if (tbody && sec) {{
+                        sec.style.display = 'block';
+                        tbody.appendChild(ledgerRow); tbody.appendChild(ledgerDesc);
+                        const b = document.getElementById(`ledger-badge-${{probeId}}`);
+                        if (b) {{ b.className='badge badge-primary'; b.style.cssText=''; b.innerText='Pending Fix'; }}
+                        updateLedgerCounts();
+                    }}
+                }} else if (decisionType === 'equivalent') {{
+                    const tbody = document.getElementById('tbody-ledger-discarded');
+                    const sec   = document.getElementById('section-ledger-discarded');
+                    if (tbody && sec) {{
+                        sec.style.display = 'block';
+                        tbody.appendChild(ledgerRow); tbody.appendChild(ledgerDesc);
+                        const b = document.getElementById(`ledger-badge-${{probeId}}`);
+                        if (b) {{ b.className='badge'; b.style.cssText='background:#f1f5f9;color:#64748b;border:1px solid #cbd5e1;'; b.innerText='Discarded'; }}
+                        updateLedgerCounts();
+                    }}
+                }}
+            }}
+
+            function markResolved(probeId, context, btn) {{
                 function flipBtn(b) {{
                     if (!b || b.disabled) return;
-                    b.innerHTML = 'Fixed';
-                    b.classList.add('is-resolved');
-                    b.disabled = true;
-                    b.onclick = null;
+                    b.innerHTML = 'Fixed'; b.classList.add('is-resolved'); b.disabled = true; b.onclick = null;
                 }}
                 if (context.startsWith('test-')) {{
                     const testId = context.slice(5);
-                    const probeEl = document.getElementById(`probe-${{testId}}-${{probeId}}`);
-                    resolveProbeEl(probeEl);
+                    Object.keys(_triageState[probeId] || {{}}).forEach(tid => {{
+                        const e = _triageState[probeId][tid];
+                        if (e && e.decision === 'action') _tsSet(probeId, tid, {{ resolved: true }});
+                    }});
                     document.querySelectorAll(`li[data-probe-id="${{probeId}}"]`).forEach(el => {{
                         if (el.id.startsWith('code-probe-')) return;
-                        resolveProbeEl(el);
-                        const otherTestId = el.getAttribute('data-test-id');
-                        if (otherTestId) {{
-                            flipBtn(document.querySelector(`button[data-resolve-test="${{probeId}}-${{otherTestId}}"]`));
-                        }}
+                        el.setAttribute('data-resolved','true'); el.classList.add('resolved-item');
+                        const tid2 = el.getAttribute('data-test-id');
+                        if (tid2) {{ _replayBadge(tid2); flipBtn(document.querySelector(`button[data-resolve-test="${{probeId}}-${{tid2}}"]`)); }}
                     }});
                     const ledgerRow = document.getElementById(`ledger-row-${{probeId}}`);
                     if (ledgerRow && ledgerRow.getAttribute('data-resolved') !== 'true') {{
-                        ledgerRow.setAttribute('data-resolved', 'true');
-                        ledgerRow.style.opacity = '0.6';
+                        ledgerRow.setAttribute('data-resolved','true'); ledgerRow.style.opacity = '0.6';
                         const badge = document.getElementById(`ledger-badge-${{probeId}}`);
-                        if (badge) {{ badge.className = 'badge badge-success'; badge.style.cssText = ''; badge.innerText = 'Fixed'; }}
+                        if (badge) {{ badge.className='badge badge-success'; badge.style.cssText=''; badge.innerText='Fixed'; }}
                         flipBtn(document.querySelector(`button[data-resolve-ledger="${{probeId}}"]`));
                     }}
+                    _replayBadge(testId);
                 }} else if (context === 'code') {{
-                    const probeEl = document.getElementById(`code-probe-${{probeId}}`);
-                    resolveProbeEl(probeEl);
-                    if (probeEl) {{
-                        const list = probeEl.closest('ul');
-                        if (list) updateCodeBadge(list.id.replace('list-code-t2-', ''));
+                    const el = document.getElementById(`code-probe-${{probeId}}`);
+                    if (el) {{
+                        el.setAttribute('data-resolved','true'); el.classList.add('resolved-item');
+                        const list = el.closest('ul');
+                        if (list) updateCodeBadge(list.id.replace('list-code-t2-',''));
                     }}
                 }} else if (context === 'ledger') {{
                     const row = document.getElementById(`ledger-row-${{probeId}}`);
                     if (row) {{
-                        row.setAttribute('data-resolved', 'true');
-                        row.style.opacity = '0.6';
+                        row.setAttribute('data-resolved','true'); row.style.opacity = '0.6';
                         const badge = document.getElementById(`ledger-badge-${{probeId}}`);
-                        if (badge) {{ badge.className = 'badge badge-success'; badge.style.cssText = ''; badge.innerText = 'Fixed'; }}
+                        if (badge) {{ badge.className='badge badge-success'; badge.style.cssText=''; badge.innerText='Fixed'; }}
                     }}
                 }}
                 flipBtn(btn);
                 saveState();
             }}
 
-            let _bulkState = {{ testId: null, groups: {{}} }};
+            // ── Badge / metric updates ────────────────────────────────────────────────
 
-            function openBulkTriageModal(testId, testFqcn) {{
-                const survivedList = document.getElementById(`list-t1-${{testId}}`);
-                if (!survivedList) return;
-                const unreviewed = Array.from(survivedList.querySelectorAll('li[data-state="unreviewed"]'));
-                if (unreviewed.length === 0) {{
-                    showToast('No unreviewed probes remaining in this test.', 'success');
-                    return;
-                }}
-                const groups = {{}};
-                unreviewed.forEach(probeEl => {{
-                    const fqcn = probeEl.getAttribute('data-target-fqcn') || 'unknown';
-                    if (!groups[fqcn]) groups[fqcn] = [];
-                    groups[fqcn].push({{
-                        probeId: probeEl.getAttribute('data-probe-id'),
-                        desc: probeEl.querySelector('.probe-desc') ? probeEl.querySelector('.probe-desc').textContent.trim() : ''
-                    }});
+            function _replayBadge(safeId) {{
+                const detailRow = document.getElementById(`desc-${{safeId}}`);
+                if (!detailRow) return;
+                let probes;
+                try {{ probes = JSON.parse(detailRow.dataset.probes || '[]'); }} catch(e) {{ return; }}
+                const t1Ids = probes.filter(r => r.bucket === 't1').map(r => r.id);
+                let unreviewed = 0, needsAction = 0, resolved = 0;
+                t1Ids.forEach(pid => {{
+                    const e = _tsGet(pid, safeId);
+                    const d = e ? e.decision : 'unreviewed';
+                    if (!d || d === 'unreviewed') unreviewed++;
+                    else if (d === 'action') {{ if (e && e.resolved) resolved++; else needsAction++; }}
                 }});
-                _bulkState = {{ testId, groups }};
-                const sortedFqcns = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
-                const totalProbes = unreviewed.length;
+                const badgeEl = document.getElementById(`badge-${{safeId}}`);
+                if (!badgeEl) return;
+                let html;
+                if      (unreviewed===0 && needsAction===0 && resolved>0) html = `<span class="status-pill resolved">[ ${{resolved}} Fixed ]</span>`;
+                else if (unreviewed===0 && needsAction===0)                html = `<span class="status-pill clear">[ Fully Triaged & Clear ]</span>`;
+                else if (unreviewed===0 && needsAction>0)                  html = `<span class="status-pill action">[ Fully Triaged | ${{needsAction}} Need Action ]</span>`;
+                else if (unreviewed>0   && needsAction>0)                  html = `<span class="status-pill mid">[ ${{unreviewed}} Unreviewed | ${{needsAction}} Need Action ]</span>`;
+                else html = `<span class="status-pill ${{t1Ids.length>0?'action':'pending'}}">[ ${{unreviewed}} Unreviewed ]</span>`;
+                badgeEl.innerHTML = html;
+            }}
+
+            function updateBadge(safeId) {{ _replayBadge(safeId); updateGlobalMetrics(); }}
+
+            function updateGlobalMetrics() {{
+                let t1Unreviewed = 0, confirmedBugs = 0, noiseBugs = 0, fullyTriaged = 0;
+                document.querySelectorAll('tr[data-probes]').forEach(detailRow => {{
+                    const safeId = detailRow.id.replace('desc-','');
+                    let probes;
+                    try {{ probes = JSON.parse(detailRow.dataset.probes || '[]'); }} catch(e) {{ return; }}
+                    const t1Ids = probes.filter(r => r.bucket === 't1').map(r => r.id);
+                    if (t1Ids.length === 0) return;
+                    let unreviewed = 0, action = 0, noise = 0;
+                    t1Ids.forEach(pid => {{
+                        const e = _tsGet(pid, safeId);
+                        const d = e ? e.decision : 'unreviewed';
+                        if (!d || d === 'unreviewed') unreviewed++;
+                        else if (d === 'action') action++;
+                        else noise++;
+                    }});
+                    t1Unreviewed  += unreviewed;
+                    confirmedBugs += action;
+                    noiseBugs     += noise;
+                    if (unreviewed === 0) fullyTriaged++;
+                }});
+                const el = id => document.getElementById(id);
+                if (el('ui-t1-inbox'))      el('ui-t1-inbox').innerText      = t1Unreviewed + ' / ' + window.initialT1Count;
+                if (el('ui-t1-action'))     el('ui-t1-action').innerText     = confirmedBugs;
+                if (el('ui-t1-noise'))      el('ui-t1-noise').innerText      = noiseBugs;
+                if (el('ui-triaged-tests')) el('ui-triaged-tests').innerText = fullyTriaged + ' / ' + window.totalTestCount;
+            }}
+
+            function _syncAccordionCounts(safeId) {{
+                [['list-t1','count-t1'],['list-t2','count-t2'],['list-t3','count-t3'],
+                 ['list-tc','count-tc'],['list-cascaded','count-cascaded'],['list-noise','count-noise']].forEach(([lp,cp]) => {{
+                    const ul  = document.getElementById(`${{lp}}-${{safeId}}`);
+                    const hdr = document.getElementById(`${{cp}}-${{safeId}}`);
+                    if (ul && hdr) hdr.innerText = `[${{ul.children.length}} Probes]`;
+                }});
+            }}
+
+            function updateAccordionCounts(safeId) {{ _syncAccordionCounts(safeId); }}
+
+            // ── Bulk Triage Modal ─────────────────────────────────────────────────────
+
+            let _bulkState = {{ safeId: null, groups: {{}} }};
+
+            function openBulkTriageModal(safeId, testFqcn) {{
+                const detailRow = document.getElementById(`desc-${{safeId}}`);
+                if (!detailRow) return;
+                let probes;
+                try {{ probes = JSON.parse(detailRow.dataset.probes || '[]'); }} catch(e) {{ return; }}
+                const unreviewed = probes.filter(r => {{
+                    if (r.bucket !== 't1') return false;
+                    const e = _tsGet(r.id, safeId);
+                    return !e || e.decision === 'unreviewed';
+                }});
+                if (unreviewed.length === 0) {{ showToast('No unreviewed probes remaining in this test.', 'success'); return; }}
+                const groups = {{}};
+                unreviewed.forEach(r => {{
+                    const fqcn = r.fqcn || 'unknown';
+                    if (!groups[fqcn]) groups[fqcn] = [];
+                    groups[fqcn].push({{ probeId: r.id, desc: r.desc }});
+                }});
+                _bulkState = {{ safeId, groups }};
+                const sortedFqcns = Object.keys(groups).sort((a,b) => groups[b].length - groups[a].length);
                 const testShortName = testFqcn.split('.').pop();
-                document.getElementById('bulkModalTitle').innerText = `Bulk Triage — ${{testShortName}}`;
+                document.getElementById('bulkModalTitle').innerText    = `Bulk Triage — ${{testShortName}}`;
                 document.getElementById('bulkModalSubtitle').innerText =
-                    `${{totalProbes}} unreviewed probe${{totalProbes !== 1 ? 's' : ''}} across ${{sortedFqcns.length}} target class${{sortedFqcns.length !== 1 ? 'es' : ''}}`;
+                    `${{unreviewed.length}} unreviewed probe${{unreviewed.length!==1?'s':''}} across ${{sortedFqcns.length}} target class${{sortedFqcns.length!==1?'es':''}}`;
                 let treeHtml = '';
                 sortedFqcns.forEach((fqcn, idx) => {{
-                    const probes = groups[fqcn];
+                    const ps = groups[fqcn];
                     const shortClass = fqcn === 'unknown' ? 'Unknown' : fqcn.split('.').pop();
-                    const pkg = fqcn === 'unknown' ? '' : fqcn.split('.').slice(0, -1).join('.');
-                    const nodeId = `bulk-node-${{idx}}`;
-                    const isFirst = idx === 0;
-                    const probeRows = probes.map(p => `
-                        <div class="bulk-probe-row" data-probe-id="${{p.probeId}}">
-                            <label style="display:flex; align-items:flex-start; gap:10px; padding:6px 8px; border-radius:var(--radius-sm); cursor:pointer; transition:background 0.1s;"
+                    const pkg        = fqcn === 'unknown' ? '' : fqcn.split('.').slice(0,-1).join('.');
+                    const nodeId     = `bulk-node-${{idx}}`;
+                    const probeRows  = ps.map(p => `
+                        <div class="bulk-probe-row">
+                            <label style="display:flex;align-items:flex-start;gap:10px;padding:6px 8px;border-radius:var(--radius-sm);cursor:pointer;"
                                    onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">
                                 <input type="checkbox" checked data-probe="${{p.probeId}}" data-fqcn="${{fqcn}}"
                                        style="width:15px;height:15px;flex-shrink:0;margin-top:2px;accent-color:var(--primary);cursor:pointer;">
-                                <span style="font-family:ui-monospace,monospace;font-size:12px;color:var(--text-muted);line-height:1.4;">${{p.desc}}</span>
+                                <span style="font-family:ui-monospace,monospace;font-size:12px;color:var(--text-muted);line-height:1.4;">${{p.desc.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}}</span>
                             </label>
                         </div>`).join('');
                     treeHtml += `
-                    <div class="bulk-class-node" style="border:1px solid var(--border-color);border-radius:var(--radius-md);overflow:hidden;margin-bottom:8px;">
-                        <div class="bulk-node-header" style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:#f8fafc;cursor:pointer;user-select:none;"
-                             onclick="toggleBulkNode('${{nodeId}}', this)">
-                            <span class="bulk-toggle-icon" style="font-size:11px;width:14px;flex-shrink:0;color:var(--text-muted);">${{isFirst ? '▼' : '▶'}}</span>
+                    <div style="border:1px solid var(--border-color);border-radius:var(--radius-md);overflow:hidden;margin-bottom:8px;">
+                        <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:#f8fafc;cursor:pointer;user-select:none;" onclick="toggleBulkNode('${{nodeId}}',this)">
+                            <span class="bulk-toggle-icon" style="font-size:11px;width:14px;color:var(--text-muted);">${{idx===0?'▼':'▶'}}</span>
                             <input type="checkbox" checked data-class-fqcn="${{fqcn}}"
                                    style="width:16px;height:16px;accent-color:var(--primary);cursor:pointer;flex-shrink:0;"
-                                   onclick="event.stopPropagation(); toggleClassCheck(this, '${{fqcn}}')">
+                                   onclick="event.stopPropagation();toggleClassCheck(this,'${{fqcn}}')">
                             <div style="flex:1;min-width:0;">
                                 <div style="font-weight:700;font-size:14px;color:var(--text-main);">${{shortClass}}</div>
-                                ${{pkg ? `<div style="font-family:ui-monospace,monospace;font-size:11px;color:var(--text-muted);margin-top:1px;">${{pkg}}</div>` : ''}}
+                                ${{pkg?`<div style="font-family:ui-monospace,monospace;font-size:11px;color:var(--text-muted);">${{pkg}}</div>`:''}}
                             </div>
-                            <span style="font-size:12px;font-weight:600;color:var(--text-muted);background:#e2e8f0;padding:3px 10px;border-radius:9999px;white-space:nowrap;flex-shrink:0;">${{probes.length}} probe${{probes.length !== 1 ? 's' : ''}}</span>
+                            <span style="font-size:12px;font-weight:600;color:var(--text-muted);background:#e2e8f0;padding:3px 10px;border-radius:9999px;">${{ps.length}} probe${{ps.length!==1?'s':''}}</span>
                         </div>
-                        <div id="${{nodeId}}" style="display:${{isFirst ? 'block' : 'none'}};padding:6px 14px 10px 14px;background:#fff;border-top:1px solid var(--border-color);">
+                        <div id="${{nodeId}}" style="display:${{idx===0?'block':'none'}};padding:6px 14px 10px 14px;background:#fff;border-top:1px solid var(--border-color);">
                             ${{probeRows}}
                         </div>
                     </div>`;
@@ -1329,37 +1491,33 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             }}
 
             function toggleClassCheck(masterCb, fqcn) {{
-                document.querySelectorAll(`#bulkModalTree input[data-fqcn="${{fqcn}}"][data-probe]`).forEach(cb => {{
-                    cb.checked = masterCb.checked;
-                }});
+                document.querySelectorAll(`#bulkModalTree input[data-fqcn="${{fqcn}}"][data-probe]`).forEach(cb => {{ cb.checked = masterCb.checked; }});
             }}
 
             function confirmBulkTriage() {{
-                const {{ testId, groups }} = _bulkState;
-                const checkboxes = document.querySelectorAll('#bulkModalTree input[data-probe]');
+                const {{ safeId, groups }} = _bulkState;
                 let count = 0;
-                checkboxes.forEach(cb => {{
-                    if (cb.checked) {{
-                        triageTest(testId, cb.getAttribute('data-probe'), 'noise', 'Out of Scope (Bulk Triage)');
-                        count++;
-                    }}
+                document.querySelectorAll('#bulkModalTree input[data-probe]').forEach(cb => {{
+                    if (cb.checked) {{ triageTest(safeId, cb.getAttribute('data-probe'), 'noise', 'Out of Scope (Bulk Triage)'); count++; }}
                 }});
                 closeBulkModal();
-                if (count > 0) showToast(`${{count}} probe${{count !== 1 ? 's' : ''}} marked as Out of Scope.`, 'success');
+                if (count > 0) showToast(`${{count}} probe${{count!==1?'s':''}} marked as Out of Scope.`, 'success');
             }}
 
             function closeBulkModal() {{
                 document.getElementById('bulkModal').style.display = 'none';
                 document.body.style.overflow = 'auto';
-                _bulkState = {{ testId: null, groups: {{}} }};
+                _bulkState = {{ safeId: null, groups: {{}} }};
             }}
 
             function closeSweepModal() {{ closeBulkModal(); }}
 
+            // ── Code-Centric triage ───────────────────────────────────────────────────
+
             function triageCode(methodId, probeId, decisionType, tagText) {{
                 const actionsContainer = document.getElementById(`code-actions-${{probeId}}`);
                 let tagClass = decisionType === 'action-code' ? 'tag-action' : 'tag-noise';
-                actionsContainer.innerHTML = `<span class="triage-tag ${{tagClass}}">[ ${{tagText}} ]</span>`;
+                if (actionsContainer) actionsContainer.innerHTML = `<span class="triage-tag ${{tagClass}}">[ ${{tagText}} ]</span>`;
                 const codeProbeEl = document.getElementById(`code-probe-${{probeId}}`);
                 if(codeProbeEl) {{
                     codeProbeEl.setAttribute('data-state', decisionType);
@@ -1385,119 +1543,46 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             function updateCodeAccordionCounts(methodId) {{
                 const listT2 = document.getElementById(`list-code-t2-${{methodId}}`);
                 if (listT2) {{
-                    const count = listT2.querySelectorAll('li').length;
                     const header = document.getElementById(`count-code-t2-${{methodId}}`);
-                    if (header) header.innerText = `[${{count}} Probes]`;
+                    if (header) header.innerText = `[${{listT2.querySelectorAll('li').length}} Probes]`;
                 }}
                 const listNoise = document.getElementById(`list-code-noise-${{methodId}}`);
                 if (listNoise) {{
-                    const count = listNoise.querySelectorAll('li').length;
                     const header = document.getElementById(`count-code-noise-${{methodId}}`);
-                    if (header) header.innerText = `[${{count}} Probes]`;
+                    if (header) header.innerText = `[${{listNoise.querySelectorAll('li').length}} Probes]`;
                 }}
             }}
 
             function updateCodeBadge(methodId) {{
-                const methodContainer = document.getElementById(`code-desc-${{methodId}}`);
-                if(!methodContainer) return;
-                const total = methodContainer.querySelectorAll('li.probe-item').length;
-                const triaged = methodContainer.querySelectorAll('li.probe-item[data-state]').length;
-                const unreviewed = total - triaged;
-                const needsAction = methodContainer.querySelectorAll('li.probe-item[data-state="action-code"]').length;
+                const mc = document.getElementById(`code-desc-${{methodId}}`);
+                if(!mc) return;
+                const unreviewed  = mc.querySelectorAll('li.probe-item[data-state="unreviewed"]').length;
+                const needsAction = mc.querySelectorAll('li.probe-item[data-state="action-code"]:not([data-resolved="true"])').length;
+                const resolvedCode= mc.querySelectorAll('li.probe-item[data-state="action-code"][data-resolved="true"]').length;
                 const badgeEl = document.getElementById(`code-badge-${{methodId}}`);
-                const resolvedCode = methodContainer.querySelectorAll('li.probe-item[data-state="action-code"][data-resolved="true"]').length;
-                const pendingAction = needsAction - resolvedCode;
-                if (unreviewed === 0 && pendingAction === 0 && resolvedCode > 0) {{
-                    badgeEl.innerHTML = `<span class="status-pill resolved">[ ${{resolvedCode}} Fixed ]</span>`;
-                }} else if (unreviewed === 0 && pendingAction === 0) {{
-                    badgeEl.innerHTML = `<span class="status-pill clear">[ Fully Triaged & Clear ]</span>`;
-                }} else if (unreviewed === 0 && pendingAction > 0) {{
-                    badgeEl.innerHTML = `<span class="status-pill action">[ Fully Triaged | ${{pendingAction}} Need Action ]</span>`;
-                }} else if (unreviewed > 0 && pendingAction > 0) {{
-                    badgeEl.innerHTML = `<span class="status-pill mid">[ ${{unreviewed}} Unreviewed | ${{pendingAction}} Need Action ]</span>`;
-                }} else {{
-                    badgeEl.innerHTML = `<span class="status-pill pending">[ ${{unreviewed}} Unreviewed ]</span>`;
-                }}
+                if (!badgeEl) return;
+                if      (unreviewed===0 && needsAction===0 && resolvedCode>0) badgeEl.innerHTML = `<span class="status-pill resolved">[ ${{resolvedCode}} Fixed ]</span>`;
+                else if (unreviewed===0 && needsAction===0)                   badgeEl.innerHTML = `<span class="status-pill clear">[ Fully Triaged & Clear ]</span>`;
+                else if (unreviewed===0 && needsAction>0)                     badgeEl.innerHTML = `<span class="status-pill action">[ Fully Triaged | ${{needsAction}} Need Action ]</span>`;
+                else if (unreviewed>0   && needsAction>0)                     badgeEl.innerHTML = `<span class="status-pill mid">[ ${{unreviewed}} Unreviewed | ${{needsAction}} Need Action ]</span>`;
+                else                                                           badgeEl.innerHTML = `<span class="status-pill pending">[ ${{unreviewed}} Unreviewed ]</span>`;
                 const t2UnreviewedGlobal = document.querySelectorAll('#code-view li.probe-item[data-state="unreviewed"]').length;
-                const t2ActionGlobal = document.querySelectorAll('#code-view li.probe-item[data-state="action-code"]').length;
-                const t2NoiseGlobal = document.querySelectorAll('#code-view li.probe-item[data-state="equivalent-code"]').length;
+                const t2ActionGlobal     = document.querySelectorAll('#code-view li.probe-item[data-state="action-code"]').length;
+                const t2NoiseGlobal      = document.querySelectorAll('#code-view li.probe-item[data-state="equivalent-code"]').length;
                 const fullyTriagedGlobal = document.querySelectorAll('#code-view .status-pill.clear, #code-view .status-pill.action').length;
-                const uiT2Inbox = document.getElementById('ui-t2-inbox');
-                if(uiT2Inbox) uiT2Inbox.innerText = t2UnreviewedGlobal + ' / ' + window.initialT2Count;
-                const uiT2Action = document.getElementById('ui-t2-action');
-                if(uiT2Action) uiT2Action.innerText = t2ActionGlobal;
-                const uiT2Noise = document.getElementById('ui-t2-noise');
-                if(uiT2Noise) uiT2Noise.innerText = t2NoiseGlobal;
-                const uiTriagedMethods = document.getElementById('ui-triaged-methods');
-                if(uiTriagedMethods) uiTriagedMethods.innerText = fullyTriagedGlobal + ' / ' + window.totalMethodCount;
+                const el = id => document.getElementById(id);
+                if(el('ui-t2-inbox'))       el('ui-t2-inbox').innerText       = t2UnreviewedGlobal + ' / ' + window.initialT2Count;
+                if(el('ui-t2-action'))      el('ui-t2-action').innerText      = t2ActionGlobal;
+                if(el('ui-t2-noise'))       el('ui-t2-noise').innerText       = t2NoiseGlobal;
+                if(el('ui-triaged-methods'))el('ui-triaged-methods').innerText = fullyTriagedGlobal + ' / ' + window.totalMethodCount;
             }}
 
             function updateLedgerCounts() {{
-                const sections = ['t1', 't3', 'pending', 'discarded'];
-                sections.forEach(sec => {{
+                ['t1','t3','pending','discarded'].forEach(sec => {{
                     const tbody = document.getElementById(`tbody-ledger-${{sec}}`);
                     const countSpan = document.getElementById(`count-ledger-${{sec}}`);
-                    if (tbody && countSpan) {{
-                        const count = tbody.children.length / 2;
-                        countSpan.innerText = `[${{count}} Probes]`;
-                    }}
+                    if (tbody && countSpan) countSpan.innerText = `[${{tbody.children.length / 2}} Probes]`;
                 }});
-            }}
-
-            function updateAccordionCounts(testId) {{
-                const listT1 = document.getElementById(`list-t1-${{testId}}`);
-                if (listT1) {{
-                    const count = listT1.querySelectorAll('li').length;
-                    const header = document.getElementById(`count-t1-${{testId}}`);
-                    if (header) header.innerText = `[${{count}} Probes]`;
-                }}
-                const listCascaded = document.getElementById(`list-cascaded-${{testId}}`);
-                if (listCascaded) {{
-                    const count = listCascaded.querySelectorAll('li').length;
-                    const header = document.getElementById(`count-cascaded-${{testId}}`);
-                    if (header) header.innerText = `[${{count}} Probes]`;
-                }}
-                const listNoise = document.getElementById(`list-noise-${{testId}}`);
-                if (listNoise) {{
-                    const count = listNoise.querySelectorAll('li').length;
-                    const header = document.getElementById(`count-noise-${{testId}}`);
-                    if (header) header.innerText = `[${{count}} Probes]`;
-                }}
-            }}
-
-            function updateBadge(testId) {{
-                const testContainer = document.getElementById(`desc-${{testId}}`);
-                const unreviewed  = testContainer.querySelectorAll('li[data-state="unreviewed"]').length;
-                const needsAction = testContainer.querySelectorAll('li[data-state="action"]:not([data-resolved="true"])').length;
-                const resolved    = testContainer.querySelectorAll('li[data-state="action"][data-resolved="true"]').length;
-                const badgeEl = document.getElementById(`badge-${{testId}}`);
-                if (unreviewed === 0 && needsAction === 0 && resolved > 0) {{
-                    badgeEl.innerHTML = `<span class="status-pill resolved">[ ${{resolved}} Fixed ]</span>`;
-                }} else if (unreviewed === 0 && needsAction === 0) {{
-                    badgeEl.innerHTML = `<span class="status-pill clear">[ Fully Triaged & Clear ]</span>`;
-                }} else if (unreviewed === 0 && needsAction > 0) {{
-                    badgeEl.innerHTML = `<span class="status-pill action">[ Fully Triaged | ${{needsAction}} Need Action ]</span>`;
-                }} else if (unreviewed > 0 && needsAction > 0) {{
-                    badgeEl.innerHTML = `<span class="status-pill mid">[ ${{unreviewed}} Unreviewed | ${{needsAction}} Need Action ]</span>`;
-                }} else {{
-                    badgeEl.innerHTML = `<span class="status-pill pending">[ ${{unreviewed}} Unreviewed ]</span>`;
-                }}
-                updateGlobalMetrics();
-            }}
-
-            function updateGlobalMetrics() {{
-                const t1Unreviewed = document.querySelectorAll('#test-view li[data-tier="1"][data-state="unreviewed"]').length;
-                const confirmedBugs = document.querySelectorAll('#test-view li[data-state="action"]').length;
-                const noiseBugs = document.querySelectorAll('#test-view li[data-state="equivalent"], #test-view li[data-state="noise"]').length;
-                const fullyTriaged = document.querySelectorAll('#test-view .status-pill.clear, #test-view .status-pill.action').length;
-                const inboxEl = document.getElementById('ui-t1-inbox');
-                if(inboxEl) inboxEl.innerText = t1Unreviewed + ' / ' + window.initialT1Count;
-                const actionEl = document.getElementById('ui-t1-action');
-                if(actionEl) actionEl.innerText = confirmedBugs;
-                const noiseEl = document.getElementById('ui-t1-noise');
-                if(noiseEl) noiseEl.innerText = noiseBugs;
-                const triagedEl = document.getElementById('ui-triaged-tests');
-                if(triagedEl) triagedEl.innerText = fullyTriaged + ' / ' + window.totalTestCount;
             }}
 
             function openCodeModal(class1, method1, class2, method2) {{
@@ -1515,6 +1600,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 document.getElementById('codeModal').style.display = "block";
                 document.body.style.overflow = "hidden";
             }}
+
         </script>
     </head>
     <body>
