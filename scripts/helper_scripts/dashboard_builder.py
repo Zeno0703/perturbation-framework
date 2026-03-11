@@ -1,199 +1,51 @@
-import os
-import sys
-import subprocess
-import time
-import signal
-import webbrowser
-import re
 import json
+import os
+import re
 import html as _html
-from collections import defaultdict
+
+try:
+    from java_source import to_idea_link, build_file_cache
+    from probe_analyser import parse_probe, get_warning
+except ModuleNotFoundError:
+    from .java_source import to_idea_link, build_file_cache
+    from .probe_analyser import parse_probe, get_warning
 
 OUT_DIR = "target/perturb"
-ARTIFACTS = ("probes.txt", "hits.txt", "test-outcomes.txt", "perturbations.txt")
 
 
-def clear_artifacts(project_dir):
-    target = os.path.join(project_dir, OUT_DIR)
-    os.makedirs(target, exist_ok=True)
-    for name in ARTIFACTS:
-        path = os.path.join(target, name)
-        if os.path.exists(path):
-            os.remove(path)
+# ---------------------------------------------------------------------------
+# HTML / JS escaping utilities
+# ---------------------------------------------------------------------------
+
+def escape_html(text):
+    return _html.escape(str(text))
 
 
-def run_maven(probe_id, project_dir, agent_jar, target_package, timeout_limit=None, targeted_tests=None):
-    clear_artifacts(project_dir)
-
-    arg_line = (
-        f'-javaagent:"{agent_jar}" '
-        f'-Dperturb.package={target_package} '
-        f'-Dperturb.outDir={OUT_DIR} '
-        f'-Dperturb.activeProbe={probe_id} '
-        '-Dorg.agent.hidden.bytebuddy.experimental=true'
-        '-Xshare:off'
-        '-XX:+EnableDynamicAgentLoading'
-    )
-
-    command = [
-        "mvn", "test",
-        f'-DargLine={arg_line}',
-        "-Djunit.jupiter.extensions.autodetection.enabled=true",
-        "-Djacoco.skip=true"
-    ]
-
-    if targeted_tests:
-        command.append(f'-Dtest={",".join(targeted_tests)}')
-
-    try:
-        process = subprocess.Popen(
-            command, cwd=project_dir,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            start_new_session=True
-        )
-        _, stderr = process.communicate(timeout=timeout_limit)
-        return process.returncode, stderr, False
-
-    except subprocess.TimeoutExpired:
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        process.communicate()
-        return -1, "PROCESS TIMED OUT", True
+def escape_js(text):
+    if not text:
+        return ""
+    return str(text).replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"')
 
 
-def unescape(text):
-    return text.replace("\\\\", "\\").replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+def sanitize_id(text):
+    return re.sub(r'\W+', '_', text)
 
 
-def read_artifact(project_dir, filename):
-    path = os.path.join(project_dir, OUT_DIR, filename)
-    try:
-        with open(path, encoding="utf-8") as f:
-            result = []
-            for line in f:
-                if "\t" not in line:
-                    continue
-                parts = line.rstrip("\r\n").split("\t", 1)
-                if len(parts) == 2:
-                    result.append([unescape(parts[0]), unescape(parts[1])])
-            return result
-    except FileNotFoundError:
-        return []
-
-
-def get_java_file_path(project_dir, fqcn, is_test=False):
-    if not fqcn or fqcn == "unknown": return None
-    base_class = fqcn.split('$')[0]
-    rel_path = base_class.replace('.', '/') + ".java"
-    base_dir = "src/test/java" if is_test else "src/main/java"
-    return os.path.join(project_dir, base_dir, rel_path)
-
-
-def read_java_file(project_dir, fqcn, is_test=False):
-    path = get_java_file_path(project_dir, fqcn, is_test)
-    if not path or not os.path.exists(path):
-        return f"// Source file not found: {path}"
-    try:
-        with open(path, encoding='utf-8') as f:
-            return f.read()
-    except Exception as e:
-        return f"// Error reading file: {str(e)}"
-
-
-def discovery(project_dir, agent_jar, target_package, log_file):
-    print("Running Discovery Phase...")
-    log_file.write("Running Discovery Phase...\n")
-    start_time = time.time()
-
-    code, stderr, _ = run_maven(-1, project_dir, agent_jar, target_package)
-    discovery_duration = time.time() - start_time
-    log_file.write(f"Discovery finished in {discovery_duration:.2f} seconds.\n")
-
-    if code != 0:
-        sys.exit(f"Discovery failed:\n{stderr[-1000:]}")
-
-    probes = {int(k): v for k, v in read_artifact(project_dir, "probes.txt")}
-    if not probes:
-        sys.exit("No probes found.")
-
-    hits = defaultdict(set)
-    for pid, test in read_artifact(project_dir, "hits.txt"):
-        hits[int(pid)].add(test)
-
-    return probes, hits, discovery_duration
-
-
-def evaluate(probe_id, tests, project_dir, agent_jar, target_package, timeout_limit, log_file):
-    code, stderr, timed_out = run_maven(probe_id, project_dir, agent_jar, target_package, timeout_limit,
-                                        targeted_tests=tests)
-
-    if timed_out:
-        log_file.write(
-            f"  - TIMEOUT! Run exceeded {timeout_limit:.2f} seconds.\n  Result: Discarded (Infinite Loop Detected)\n")
-        return {t: "FAIL (TIMEOUT)" for t in tests}, 0, len(tests), True, {}
-
-    outcomes = {k: v.strip() for k, v in read_artifact(project_dir, "test-outcomes.txt")}
-    if not outcomes:
-        log_file.write(f"  No outcomes produced:\n{stderr[-1000:]}\n")
-        return None, 0, 0, False, {}
-
-    actions_map = defaultdict(list)
-    for test_id, action in read_artifact(project_dir, "perturbations.txt"):
-        actions_map[test_id].append(action)
-
-    test_results_dict = {}
-    failed_count = 0
-    passed_count = 0
-
-    for test in sorted(tests):
-        status = outcomes.get(test, 'MISSING')
-        test_results_dict[test] = status
-
-        test_actions = actions_map.get(test, [])
-        action_str = f"  ({', '.join(test_actions)})" if test_actions else ""
-        log_file.write(f"  - {test}: {status}{action_str}\n")
-
-        if "FAIL" in status.upper():
-            failed_count += 1
-        elif status.upper() == "PASS":
-            passed_count += 1
-
-    total = failed_count + passed_count
-    if total > 0:
-        log_file.write(f"  Tests catching perturbation: {failed_count / total * 100:.2f}% ({failed_count}/{total})\n")
-
-    return test_results_dict, passed_count, failed_count, False, actions_map
-
-
-def parse_probe(desc):
-    match = re.search(r'Modified (.*?) in (.*)', desc)
-    if not match: return "unknown", "unknown", "unknown"
-    mod = match.group(1)
-    sig = match.group(2)
-
-    cm_match = re.search(r'([\w\.\$]+)\.([\w\$]+)\(', sig)
-    if cm_match:
-        return mod, cm_match.group(1), cm_match.group(2)
-    return mod, "unknown", "unknown"
-
-
-def get_warning(mod, method_name):
-    mod_lower = mod.lower()
-    if "return value" in mod_lower:
-        return f"Diagnostic: The return value of <code>{method_name}()</code> was corrupted, but this test's final assertions were not sensitive to the change. The state either failed to propagate, or the assertions are too broad."
-    elif "argument" in mod_lower:
-        return f"Diagnostic: The arguments passed to <code>{method_name}()</code> were corrupted, but the test remained unaffected. The logic might be ignoring these inputs, or the state failed to propagate."
-    elif "variable" in mod_lower:
-        return f"Diagnostic: An internal variable in <code>{method_name}()</code> was modified, but the test's assertions missed the side-effects. The infection failed to reach the evaluated state."
-    return f"Diagnostic: <code>{method_name}()</code> was perturbed, but the test passed. The state either failed to propagate, or the assertions are too broad."
-
+# ---------------------------------------------------------------------------
+# Shared HTML fragment builders
+# ---------------------------------------------------------------------------
 
 def build_action_trace(p):
+    """Render the execution-trace block for a single probe entry."""
     action_list = p.get('actions', [])
     if not action_list:
         action_list = ["State modification applied"]
 
     exceptions = p.get('exceptions', [])
-    exc_str = f" <span class='trace-exception'>({escape_html(' | '.join(exceptions))})</span>" if exceptions else ""
+    exc_str = (
+        f" <span class='trace-exception'>({escape_html(' | '.join(exceptions))})</span>"
+        if exceptions else ""
+    )
 
     disp = f"<span class='text-muted'>Execution Trace (Hit {len(action_list)} times):</span><br>"
     disp += "<div class='execution-trace'>"
@@ -206,169 +58,125 @@ def build_action_trace(p):
     return disp
 
 
-def to_idea_link(project_dir, fqcn, is_test=False):
-    path = get_java_file_path(project_dir, fqcn, is_test)
-    if not path: return "#"
-    return f"idea://open?file={os.path.abspath(path)}"
+# ---------------------------------------------------------------------------
+# Probe-Centric (Ledger) tab builders
+# ---------------------------------------------------------------------------
 
+def build_ledger_row(p, project_dir, probe_status=None):
+    class_name = p['fqcn'].split('.')[-1] if p['fqcn'] != 'unknown' else 'Unknown'
+    hit_count = len(p['tests'])
+    ps = probe_status or (
+        'Survived' if p.get('tier') == 1 else
+        'Clean Kill' if p.get('tier') == 3 else 'Unknown'
+    )
 
-def sanitize_id(text):
-    return re.sub(r'\W+', '_', text)
+    if ps == 'Un-hit':
+        badge_class = ""
+        badge_style = "background:#f1f5f9; color:var(--text-muted); border:1px solid var(--border-strong);"
+        status_text = "Un-hit / Dead Code"
+        row_style = "opacity:0.5;"
+    elif ps == 'TIMEOUT':
+        badge_class = "badge-warning"
+        badge_style = ""
+        status_text = "⏱ TIMEOUT"
+        row_style = ""
+    elif ps == 'Survived':
+        badge_class = "badge-danger"
+        badge_style = ""
+        status_text = "Unprotected"
+        row_style = ""
+    elif ps == 'Clean Kill':
+        badge_class = "badge-success"
+        badge_style = ""
+        status_text = "Clean Kill"
+        row_style = ""
+    elif ps == 'Dirty Kill':
+        badge_class = "badge-warning"
+        badge_style = ""
+        status_text = "Dirty Kill"
+        row_style = "opacity:0.75;"
+    else:
+        badge_class = ""
+        badge_style = "background:#f1f5f9; color:var(--text-muted); border:1px solid var(--border-strong);"
+        status_text = ps
+        row_style = ""
 
+    witness_list = (
+        "".join([f"<li style='margin-bottom: 4px;'>{escape_html(t)}</li>" for t in p['tests']])
+        if p['tests'] else
+        "<li style='color:var(--text-muted); font-style:italic;'>No tests hit this probe.</li>"
+    )
+    ide_link = to_idea_link(project_dir, p['fqcn'], False)
 
-def escape_html(text):
-    return _html.escape(str(text))
-
-
-def escape_js(text):
-    if not text: return ""
-    return str(text).replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"')
-
-
-def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_stats,
-                       test_summary, metrics, global_tier3_probes, master_probes):
-    html_path = os.path.join(project_dir, OUT_DIR, "dashboard.html")
-
-    # Build sorted probe ID list — all probes including un-hit
-    all_probe_ids = sorted(master_probes.keys())
-    probe_ids_json = json.dumps(all_probe_ids)
-
-    file_cache = {}
-    needed_files = set()
-
-    for test_name, stats in test_stats.items():
-        test_class = test_name.split('#')[0]
-        needed_files.add((test_class, True))
-        for p in stats['probes']:
-            _, fqcn, _ = parse_probe(p['desc'])
-            if fqcn != "unknown":
-                needed_files.add((fqcn, False))
-
-    for p in dashboard_ledger:
-        if p['fqcn'] and p['fqcn'] != "unknown":
-            needed_files.add((p['fqcn'], False))
-
-    for method_key, stats in dashboard_methods.items():
-        if stats['fqcn'] and stats['fqcn'] != "unknown":
-            needed_files.add((stats['fqcn'], False))
-
-    for fqcn, is_test in needed_files:
-        file_cache[(fqcn, is_test)] = read_java_file(project_dir, fqcn, is_test)
-
-    # Source files take priority over test files when the fqcn is shared
-    serialisable_cache = {}
-    for (fqcn, is_test), content in file_cache.items():
-        if fqcn not in serialisable_cache or not is_test:
-            serialisable_cache[fqcn] = content
-    file_cache_json = json.dumps(serialisable_cache).replace("</", "<\\/")
-
-    def build_ledger_row(p, probe_status=None):
-        class_name = p['fqcn'].split('.')[-1] if p['fqcn'] != 'unknown' else 'Unknown'
-        hit_count = len(p['tests'])
-        ps = probe_status or (
-            'Survived' if p.get('tier') == 1 else
-            'Clean Kill' if p.get('tier') == 3 else 'Unknown'
-        )
-
-        if ps == 'Un-hit':
-            badge_class = ""
-            badge_style = "background:#f1f5f9; color:var(--text-muted); border:1px solid var(--border-strong);"
-            status_text = "Un-hit / Dead Code"
-            row_style = "opacity:0.5;"
-        elif ps == 'TIMEOUT':
-            badge_class = "badge-warning"
-            badge_style = ""
-            status_text = "⏱ TIMEOUT"
-            row_style = ""
-        elif ps == 'Survived':
-            badge_class = "badge-danger"
-            badge_style = ""
-            status_text = "Unprotected"
-            row_style = ""
-        elif ps == 'Clean Kill':
-            badge_class = "badge-success"
-            badge_style = ""
-            status_text = "Clean Kill"
-            row_style = ""
-        elif ps == 'Dirty Kill':
-            badge_class = "badge-warning"
-            badge_style = ""
-            status_text = "Dirty Kill"
-            row_style = "opacity:0.75;"
-        else:
-            badge_class = ""
-            badge_style = "background:#f1f5f9; color:var(--text-muted); border:1px solid var(--border-strong);"
-            status_text = ps
-            row_style = ""
-
-        witness_list = "".join([f"<li style='margin-bottom: 4px;'>{escape_html(t)}</li>" for t in p['tests']]) if p['tests'] else "<li style='color:var(--text-muted); font-style:italic;'>No tests hit this probe.</li>"
-        ide_link = to_idea_link(project_dir, p['fqcn'], False)
-
-        return f"""
-        <tr id='ledger-row-{p['id']}' class="clickable-row" style="{row_style}" onclick="toggleRow(event, 'ledger-desc-{p['id']}')">
-            <td><div class="scrollable-text font-medium code-font">#{p['id']}</div></td>
-            <td><div class="scrollable-text code-font">{class_name}.{p['method']}()</div></td>
-            <td><div class="scrollable-text">{escape_html(p['desc'])}</div></td>
-            <td class="text-center"><div class="scrollable-text" style="text-align:center;">{hit_count} Test{'s' if hit_count != 1 else ''}</div></td>
-            <td class="text-right"><div class="scrollable-text" style="text-align:right;"><span id="ledger-badge-{p['id']}" class="badge {badge_class}" style="{badge_style}">{status_text}</span></div></td>
-        </tr>
-        <tr id="ledger-desc-{p['id']}" class="details-row" style="display: none;">
-            <td colspan="5" class="p-0">
-                <div class="test-details">
-                    <div style="display: flex; gap: 24px; margin-bottom: 0;">
-                        <div style="flex: 2; overflow: hidden; min-width: 0;">
-                            <h4 style="margin: 0 0 10px 0; font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.06em; font-weight: 700; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Witness List</h4>
-                            <ul style="max-height: 150px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; padding-left: 18px; color: var(--text-main); margin: 0;">
-                                {witness_list}
-                            </ul>
-                        </div>
-                        <div style="flex: 1; display: flex; flex-direction: column; justify-content: flex-start; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 24px; min-width: 200px;">
-                            <h4 style="margin: 0 0 2px 0; font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.06em; font-weight: 700; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Actions</h4>
-                            <a href="{ide_link}" class="btn-small" style="text-align: center; width: 100%;">Open in IDE</a>
-                            <button class="btn-small" style="width: 100%;" onclick="event.stopPropagation(); openCodeModal('{escape_js(p['fqcn'])}', '{escape_js(p['method'])}', null, null)">View Source</button>
-                            <div class='ledger-resolve-wrap'>
-                                <button class='btn-resolve' data-resolve-ledger="{p['id']}"
-                                    onclick="event.stopPropagation(); markResolved('{p['id']}', 'ledger', this)">
-                                    Mark as Fixed
-                                </button>
-                                <div style='font-size:11px; color:var(--success-text); margin-top:6px;'>I have written a new test covering this probe.</div>
-                            </div>
+    return f"""
+    <tr id='ledger-row-{p['id']}' class="clickable-row" style="{row_style}" onclick="toggleRow(event, 'ledger-desc-{p['id']}')">
+        <td><div class="scrollable-text font-medium code-font">#{p['id']}</div></td>
+        <td><div class="scrollable-text code-font">{class_name}.{p['method']}()</div></td>
+        <td><div class="scrollable-text">{escape_html(p['desc'])}</div></td>
+        <td class="text-center"><div class="scrollable-text" style="text-align:center;">{hit_count} Test{'s' if hit_count != 1 else ''}</div></td>
+        <td class="text-right"><div class="scrollable-text" style="text-align:right;"><span id="ledger-badge-{p['id']}" class="badge {badge_class}" style="{badge_style}">{status_text}</span></div></td>
+    </tr>
+    <tr id="ledger-desc-{p['id']}" class="details-row" style="display: none;">
+        <td colspan="5" class="p-0">
+            <div class="test-details">
+                <div style="display: flex; gap: 24px; margin-bottom: 0;">
+                    <div style="flex: 2; overflow: hidden; min-width: 0;">
+                        <h4 style="margin: 0 0 10px 0; font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.06em; font-weight: 700; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Witness List</h4>
+                        <ul style="max-height: 150px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; padding-left: 18px; color: var(--text-main); margin: 0;">
+                            {witness_list}
+                        </ul>
+                    </div>
+                    <div style="flex: 1; display: flex; flex-direction: column; justify-content: flex-start; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 24px; min-width: 200px;">
+                        <h4 style="margin: 0 0 2px 0; font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.06em; font-weight: 700; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Actions</h4>
+                        <a href="{ide_link}" class="btn-small" style="text-align: center; width: 100%;">Open in IDE</a>
+                        <button class="btn-small" style="width: 100%;" onclick="event.stopPropagation(); openCodeModal('{escape_js(p['fqcn'])}', '{escape_js(p['method'])}', null, null)">View Source</button>
+                        <div class='ledger-resolve-wrap'>
+                            <button class='btn-resolve' data-resolve-ledger="{p['id']}"
+                                onclick="event.stopPropagation(); markResolved('{p['id']}', 'ledger', this)">
+                                Mark as Fixed
+                            </button>
+                            <div style='font-size:11px; color:var(--success-text); margin-top:6px;'>I have written a new test covering this probe.</div>
                         </div>
                     </div>
                 </div>
-            </td>
-        </tr>
-        """
+            </div>
+        </td>
+    </tr>
+    """
 
-    def build_ledger_table(rows_html, tbody_id):
-        return f"""
-        <div class="table-container" style="margin-top: 14px;">
-            <table>
-                <thead>
-                    <tr>
-                        <th style="width: 110px;">Probe ID</th>
-                        <th style="width: 300px;">Target</th>
-                        <th>Perturbation</th>
-                        <th class="text-center" style="width: 150px;">Hit by Tests</th>
-                        <th class="text-right" style="width: 210px;">Status</th>
-                    </tr>
-                </thead>
-                <tbody id="{tbody_id}">
-                    {rows_html}
-                </tbody>
-            </table>
-        </div>
-        """
 
-    # ── Build all probe groups from master_probes ──────────────────────────
+def build_ledger_table(rows_html, tbody_id):
+    return f"""
+    <div class="table-container" style="margin-top: 14px;">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 110px;">Probe ID</th>
+                    <th style="width: 300px;">Target</th>
+                    <th>Perturbation</th>
+                    <th class="text-center" style="width: 150px;">Hit by Tests</th>
+                    <th class="text-right" style="width: 210px;">Status</th>
+                </tr>
+            </thead>
+            <tbody id="{tbody_id}">
+                {rows_html}
+            </tbody>
+        </table>
+    </div>
+    """
+
+
+def build_ledger_html(master_probes, project_dir):
+    """Build the full Probe-Centric tab HTML."""
+
     def mp_to_ledger_p(mp):
         return {
             'id': mp['id'], 'desc': mp['desc'], 'fqcn': mp['fqcn'],
-            'method': mp['method'], 'tests': sorted(mp['test_outcomes'].keys())
+            'method': mp['method'], 'tests': sorted(mp['test_outcomes'].keys()),
         }
 
-    ledger_t1 = []   # Survived
-    ledger_t3 = []   # Clean Kill
+    ledger_t1 = []
+    ledger_t3 = []
     ledger_dirty = []
     ledger_timeout = []
     ledger_unhit = []
@@ -389,7 +197,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
     ledger_html = ""
 
     if ledger_t1:
-        rows_html = "".join([build_ledger_row(p, 'Survived') for p in ledger_t1])
+        rows_html = "".join([build_ledger_row(p, project_dir, 'Survived') for p in ledger_t1])
         ledger_html += f"""
         <div class='details-section'>
             <div class='details-title text-danger accordion-header' onclick="toggleAccordion('content-ledger-t1', 'icon-ledger-t1')">
@@ -413,7 +221,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
     """
 
     if ledger_t3:
-        rows_html = "".join([build_ledger_row(p, 'Clean Kill') for p in ledger_t3])
+        rows_html = "".join([build_ledger_row(p, project_dir, 'Clean Kill') for p in ledger_t3])
         ledger_html += f"""
         <div class='details-section'>
             <div class='details-title text-success accordion-header' onclick="toggleAccordion('content-ledger-t3', 'icon-ledger-t3')">
@@ -427,7 +235,10 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
     if ledger_dirty or ledger_timeout:
         all_dirty = ledger_dirty + ledger_timeout
-        rows_html = "".join([build_ledger_row(p, 'Dirty Kill' if p in ledger_dirty else 'TIMEOUT') for p in all_dirty])
+        rows_html = "".join([
+            build_ledger_row(p, project_dir, 'Dirty Kill' if p in ledger_dirty else 'TIMEOUT')
+            for p in all_dirty
+        ])
         ledger_html += f"""
         <div class='details-section'>
             <div class='details-title text-warning accordion-header' onclick="toggleAccordion('content-ledger-dirty', 'icon-ledger-dirty')">
@@ -440,7 +251,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
         """
 
     if ledger_unhit:
-        rows_html = "".join([build_ledger_row(p, 'Un-hit') for p in ledger_unhit])
+        rows_html = "".join([build_ledger_row(p, project_dir, 'Un-hit') for p in ledger_unhit])
         ledger_html += f"""
         <div class='details-section'>
             <div class='details-title text-muted accordion-header' onclick="toggleAccordion('content-ledger-unhit', 'icon-ledger-unhit')">
@@ -463,14 +274,25 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
     </div>
     """
 
-    valid_sorted_tests = []
+    return ledger_html
 
-    # Sort tests: most survived probes first (most vulnerable at top), then by total footprint
+
+# ---------------------------------------------------------------------------
+# Test-Centric tab builder
+# ---------------------------------------------------------------------------
+
+def build_test_rows(test_stats, test_summary, global_tier3_probes, project_dir):
+    """Build all test row HTML for the Test-Centric tab.
+
+    Returns (test_rows_html, total_tests, total_t1_unreviewed, fully_triaged_tests).
+    """
+
     def test_sort_key(item):
         t_name = item[0]
         s = test_summary.get(t_name, {'clean': 0, 'dirty': 0, 'survived': 0})
         return (-s['survived'], -(s['clean'] + s['dirty'] + s['survived']))
 
+    valid_sorted_tests = []
     for test_name, stats in sorted(test_stats.items(), key=lambda x: x[0]):
         t1 = []
         t2_exceptions = []
@@ -518,7 +340,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
         else:
             status_pill = f'<span class="status-pill {"action" if is_vulnerable else "pending"}">[ {unreviewed_count} Unreviewed ]</span>'
 
-        # Footprint badges — compact colored circles with just the number
         _dot = "display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;font-size:11px;font-weight:700;flex-shrink:0;"
         footprint_badges = ""
         if n_clean:
@@ -601,7 +422,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                         """
             inner_html += "</ul></div></div>"
 
-        # Exceptions section (Dirty Kills) — read-only, no triage needed
         if t2_exceptions:
             inner_html += f"""
             <div class='details-section'>
@@ -740,6 +560,18 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
         </tr>
         """
 
+    return test_rows, total_tests, total_t1_unreviewed, fully_triaged_tests
+
+
+# ---------------------------------------------------------------------------
+# Code-Centric tab builder
+# ---------------------------------------------------------------------------
+
+def build_code_rows(dashboard_methods, master_probes, project_dir):
+    """Build all method row HTML for the Code-Centric tab.
+
+    Returns (code_rows_html, valid_methods_count, total_t2_unreviewed).
+    """
     code_rows = ""
     valid_methods_count = 0
     total_t2_unreviewed = 0
@@ -767,7 +599,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             action_disp = build_action_trace(p)
             ide_link = to_idea_link(project_dir, m_fqcn, False)
 
-            # Build per-test color-coded witness list from master_probes
             mp_data = master_probes.get(p['id'])
             test_items = ""
             n_clean = n_dirty = n_survived = 0
@@ -851,6 +682,38 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             </td>
         </tr>
         """
+
+    return code_rows, valid_methods_count, total_t2_unreviewed
+
+
+# ---------------------------------------------------------------------------
+# Top-level dashboard generator
+# ---------------------------------------------------------------------------
+
+def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_stats,
+                       test_summary, metrics, global_tier3_probes, master_probes):
+    """
+    Generate the full HTML dashboard and write it to disk.
+
+    Returns the path to the written HTML file.
+    """
+    html_path = os.path.join(project_dir, OUT_DIR, "dashboard.html")
+
+    all_probe_ids = sorted(master_probes.keys())
+    probe_ids_json = json.dumps(all_probe_ids)
+
+    file_cache = build_file_cache(project_dir, test_stats, dashboard_ledger, dashboard_methods)
+    file_cache_json = json.dumps(file_cache).replace("</", "<\\/")
+
+    ledger_html = build_ledger_html(master_probes, project_dir)
+
+    test_rows, total_tests, total_t1_unreviewed, fully_triaged_tests = build_test_rows(
+        test_stats, test_summary, global_tier3_probes, project_dir,
+    )
+
+    code_rows, valid_methods_count, total_t2_unreviewed = build_code_rows(
+        dashboard_methods, master_probes, project_dir,
+    )
 
     html_content = f"""
     <!DOCTYPE html>
@@ -985,7 +848,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
             .action-group {{ display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: nowrap; }}
 
-            /* Unified button base */
             .btn-small, .btn-primary, .btn-resolve, .btn-triage {{
                 display: inline-flex; align-items: center; justify-content: center;
                 height: 32px; padding: 0 13px;
@@ -1020,7 +882,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             .status-pill.mid {{ background: var(--warning-bg); color: var(--warning-text); border: 1px solid #fde68a; }}
             .status-pill.pending {{ background: #f1f5f9; color: var(--text-muted); border: 1px solid var(--border-strong); }}
 
-            /* Modal */
             .modal {{ display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(15, 23, 42, 0.65); backdrop-filter: blur(3px); }}
             .modal-content {{ background-color: #ffffff; margin: 2% auto; padding: 24px; border: 1px solid var(--border-color); width: 94%; height: 85%; border-radius: var(--radius-lg); box-shadow: 0 20px 40px -8px rgba(0, 0, 0, 0.2); display: flex; flex-direction: column; }}
             .modal-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border-color); }}
@@ -1038,7 +899,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             .code-container code {{ font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace; font-size: 12px; line-height: 1.6; }}
             mark.scroll-target {{ background-color: #fef08a; color: #854d0e; border-radius: 3px; padding: 1px 3px; font-weight: 600; }}
 
-            /* Resolved state */
             .resolved-item {{ opacity: 0.6; }}
             .resolved-item .probe-desc,
             .resolved-item .probe-warning,
@@ -1049,7 +909,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             .status-pill.resolved {{ background: var(--success-bg); color: var(--success-text); border: 1px solid #a7f3d0; }}
             .ledger-resolve-wrap {{ margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color); }}
 
-            /* Trace exception text */
             .trace-exception {{ color: var(--danger); font-weight: 600; }}
         </style>
         <script>
@@ -1059,8 +918,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             window.totalTestCount = {total_tests};
             window.totalMethodCount = {valid_methods_count};
 
-            // ── Persistence ──────────────────────────────────────────────
-            // Key is hashed from probe IDs so different runs get separate slots
             const _PROBE_IDS = {probe_ids_json};
             const _STORAGE_KEY = 'perturb_triage_' + _PROBE_IDS.slice().sort().join(',').split('').reduce((h,c)=>((h<<5)-h+c.charCodeAt(0))|0, 0);
 
@@ -1077,11 +934,9 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                         state[pid].push({{ testId: tid, decision: s, tag, resolved }});
                     }}
                 }});
-                // Also capture ledger-level resolved flags (probe-centric tab)
                 document.querySelectorAll('tr[id^="ledger-row-"][data-resolved="true"]').forEach(row => {{
                     const pid = row.id.replace('ledger-row-', '');
                     if (!state[pid]) state[pid] = [];
-                    // Mark ledger resolved alongside any existing entry, avoid duplication
                     const existing = state[pid].find(e => e.decision === 'ledger-resolved');
                     if (!existing) state[pid].push({{ testId: null, decision: 'ledger-resolved', tag: null, resolved: true }});
                 }});
@@ -1090,12 +945,11 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
 
             function loadState(state) {{
                 if (!state) return;
-                // First pass: replay triage decisions
                 Object.entries(state).forEach(([pid, entries]) => {{
                     entries.forEach(entry => {{
                         const {{ testId, decision, tag, resolved }} = entry;
                         const tagText = tag ? tag.replace(/^\[\s*|\s*\]$/g, '') : decision;
-                        if (decision === 'ledger-resolved') return; // handled in second pass
+                        if (decision === 'ledger-resolved') return;
                         if (decision === 'action-code' || decision === 'equivalent-code') {{
                             const el = document.getElementById(`code-probe-${{pid}}`);
                             if (el && el.getAttribute('data-state') !== decision) {{
@@ -1111,7 +965,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                         }}
                     }});
                 }});
-                // Second pass: replay resolved flags (after triage so buttons exist)
                 Object.entries(state).forEach(([pid, entries]) => {{
                     entries.forEach(entry => {{
                         const {{ testId, decision, resolved }} = entry;
@@ -1162,20 +1015,14 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     try {{
                         const data = JSON.parse(e.target.result);
                         if (!data.state) {{ showToast('❌ Invalid file — missing state field.', 'error'); return; }}
-
-                        // Count how many decisions will be skipped (probe no longer exists)
                         const imported = new Set(data.probeIds || []);
                         const current  = new Set(_PROBE_IDS);
                         const skipped  = [...imported].filter(p => !current.has(p)).length;
                         const restored = Object.keys(data.state).length - skipped;
-
                         loadState(data.state);
                         saveState();
-
                         const banner = document.getElementById('import-banner');
                         if (banner) banner.style.display = 'none';
-
-                        // Build a friendly summary — skipped count is expected after a re-run
                         let msg = `Imported — ${{restored}} decision${{restored !== 1 ? 's' : ''}} restored.`;
                         if (skipped > 0) msg += ` ${{skipped}} probe${{skipped !== 1 ? 's' : ''}} no longer exist and were skipped.`;
                         showToast(msg, 'success');
@@ -1208,18 +1055,15 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     setTimeout(() => toast.remove(), 200);
                 }}, 4000);
             }}
-            // ── End Persistence ──────────────────────────────────────────
 
             function switchTab(tabId) {{
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 document.querySelectorAll('.metrics-container').forEach(m => m.classList.remove('active'));
-
                 document.getElementById(tabId).classList.add('active');
                 if (window.event && window.event.currentTarget) {{
                     window.event.currentTarget.classList.add('active');
                 }}
-
                 if (tabId === 'test-view') {{
                     document.getElementById('metrics-test').classList.add('active');
                 }} else if (tabId === 'probe-view') {{
@@ -1234,7 +1078,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 var row = document.getElementById(rowId);
                 var isHidden = row.style.display === "none";
                 row.style.display = isHidden ? "table-row" : "none";
-
                 var hintText = document.querySelector(`tr[onclick="toggleRow(event, '${{rowId}}')"] .expand-hint`);
                 if (hintText) {{
                     hintText.innerText = isHidden ? "Hide details ▲" : "Show details ▼";
@@ -1256,46 +1099,34 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             function triageTest(testId, probeId, decisionType, tagText) {{
                 const probeEl = document.getElementById(`probe-${{testId}}-${{probeId}}`);
                 const actionsContainer = document.getElementById(`actions-${{testId}}-${{probeId}}`);
-
                 let tagClass = 'tag-noise';
                 if (decisionType === 'action') tagClass = 'tag-action';
-
                 actionsContainer.innerHTML = `<span class="triage-tag ${{tagClass}}">[ ${{tagText}} ]</span>`;
                 probeEl.setAttribute('data-state', decisionType);
 
                 if (decisionType === 'action') {{
                     probeEl.classList.add('action-required');
-
-                    // Show the "Mark as Fixed" row for this probe
                     const resolveWrap = document.getElementById(`resolve-wrap-${{testId}}-${{probeId}}`);
                     if (resolveWrap) resolveWrap.style.display = 'block';
-
-                    // SMART CASCADING across Tests
                     const otherProbes = document.querySelectorAll(`li[data-probe-id="${{probeId}}"][data-state="unreviewed"]`);
                     otherProbes.forEach(otherProbeEl => {{
                         if (otherProbeEl.id.startsWith('code-probe-')) return;
-
                         if (otherProbeEl.id !== probeEl.id) {{
                             const otherTestId = otherProbeEl.getAttribute('data-test-id');
                             const otherActionsContainer = document.getElementById(`actions-${{otherTestId}}-${{probeId}}`);
-
                             if(otherActionsContainer) {{
                                 otherActionsContainer.innerHTML = `<span class="triage-tag tag-cascaded">[ ${{tagText}} (Cascaded) ]</span>`;
                                 otherProbeEl.setAttribute('data-state', 'action');
                                 otherProbeEl.classList.add('cascaded-item');
-
                                 const cascadedList = document.getElementById(`list-cascaded-${{otherTestId}}`);
                                 const cascadedContainer = document.getElementById(`cascaded-section-${{otherTestId}}`);
                                 if(cascadedContainer) cascadedContainer.style.display = 'block';
                                 if(cascadedList) cascadedList.appendChild(otherProbeEl);
-
                                 updateBadge(otherTestId);
                                 updateAccordionCounts(otherTestId);
                             }}
                         }}
                     }});
-
-                    // CROSS-TAB SYNC: Move the item to "Pending Fix" in the Vulnerability Ledger
                     const ledgerRow = document.getElementById(`ledger-row-${{probeId}}`);
                     const ledgerDesc = document.getElementById(`ledger-desc-${{probeId}}`);
                     if (ledgerRow && ledgerDesc) {{
@@ -1305,7 +1136,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                             pendingSection.style.display = 'block';
                             pendingTbody.appendChild(ledgerRow);
                             pendingTbody.appendChild(ledgerDesc);
-
                             const ledgerBadge = document.getElementById(`ledger-badge-${{probeId}}`);
                             if (ledgerBadge) {{
                                 ledgerBadge.className = 'badge badge-primary';
@@ -1314,40 +1144,31 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                             updateLedgerCounts();
                         }}
                     }}
-
                 }} else if (decisionType === 'equivalent') {{
                     probeEl.classList.add('noise-item');
                     const noiseList = document.getElementById(`list-noise-${{testId}}`);
                     const noiseContainer = document.getElementById(`noise-section-${{testId}}`);
                     if(noiseContainer) noiseContainer.style.display = 'block';
                     if(noiseList) noiseList.appendChild(probeEl);
-
-                    // SMART CASCADING across Tests for Equivalent (Global Trash)
                     const otherProbes = document.querySelectorAll(`li[data-probe-id="${{probeId}}"][data-state="unreviewed"]`);
                     otherProbes.forEach(otherProbeEl => {{
                         if (otherProbeEl.id.startsWith('code-probe-')) return;
-
                         if (otherProbeEl.id !== probeEl.id) {{
                             const otherTestId = otherProbeEl.getAttribute('data-test-id');
                             const otherActionsContainer = document.getElementById(`actions-${{otherTestId}}-${{probeId}}`);
-
                             if(otherActionsContainer) {{
                                 otherActionsContainer.innerHTML = `<span class="triage-tag tag-noise">[ ${{tagText}} (Cascaded) ]</span>`;
                                 otherProbeEl.setAttribute('data-state', 'equivalent');
                                 otherProbeEl.classList.add('noise-item');
-
                                 const otherNoiseList = document.getElementById(`list-noise-${{otherTestId}}`);
                                 const otherNoiseContainer = document.getElementById(`noise-section-${{otherTestId}}`);
                                 if(otherNoiseContainer) otherNoiseContainer.style.display = 'block';
                                 if(otherNoiseList) otherNoiseList.appendChild(otherProbeEl);
-
                                 updateBadge(otherTestId);
                                 updateAccordionCounts(otherTestId);
                             }}
                         }}
                     }});
-
-                    // CROSS-TAB SYNC: Move the item to "Discarded Noise" in the Vulnerability Ledger
                     const ledgerRow = document.getElementById(`ledger-row-${{probeId}}`);
                     const ledgerDesc = document.getElementById(`ledger-desc-${{probeId}}`);
                     if (ledgerRow && ledgerDesc) {{
@@ -1357,7 +1178,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                             discardedSection.style.display = 'block';
                             discardedTbody.appendChild(ledgerRow);
                             discardedTbody.appendChild(ledgerDesc);
-
                             const ledgerBadge = document.getElementById(`ledger-badge-${{probeId}}`);
                             if (ledgerBadge) {{
                                 ledgerBadge.className = 'badge';
@@ -1367,26 +1187,19 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                             updateLedgerCounts();
                         }}
                     }}
-
                 }} else if (decisionType === 'noise') {{
-                    // Out of scope is Local only!
                     probeEl.classList.add('noise-item');
                     const noiseList = document.getElementById(`list-noise-${{testId}}`);
                     const noiseContainer = document.getElementById(`noise-section-${{testId}}`);
                     if(noiseContainer) noiseContainer.style.display = 'block';
                     if(noiseList) noiseList.appendChild(probeEl);
                 }}
-
                 updateBadge(testId);
                 updateAccordionCounts(testId);
                 saveState();
             }}
 
-            // ── Mark as Resolved ────────────────────────────────────────
             function markResolved(probeId, context, btn) {{
-                // context = 'test-<testId>'  |  'code'  |  'ledger'
-
-                // Helper: visually resolve a single probe <li> element and its badge
                 function resolveProbeEl(el) {{
                     if (!el || el.getAttribute('data-resolved') === 'true') return;
                     el.setAttribute('data-resolved', 'true');
@@ -1394,8 +1207,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     const tid = el.getAttribute('data-test-id');
                     if (tid) updateBadge(tid);
                 }}
-
-                // Helper: flip a resolve button to disabled "Fixed" state
                 function flipBtn(b) {{
                     if (!b || b.disabled) return;
                     b.innerHTML = 'Fixed';
@@ -1403,13 +1214,10 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     b.disabled = true;
                     b.onclick = null;
                 }}
-
                 if (context.startsWith('test-')) {{
                     const testId = context.slice(5);
                     const probeEl = document.getElementById(`probe-${{testId}}-${{probeId}}`);
                     resolveProbeEl(probeEl);
-
-                    // Cascade: resolve the same probe in every other test that holds it
                     document.querySelectorAll(`li[data-probe-id="${{probeId}}"]`).forEach(el => {{
                         if (el.id.startsWith('code-probe-')) return;
                         resolveProbeEl(el);
@@ -1418,8 +1226,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                             flipBtn(document.querySelector(`button[data-resolve-test="${{probeId}}-${{otherTestId}}"]`));
                         }}
                     }});
-
-                    // Cascade: also resolve the Probe-Centric ledger row
                     const ledgerRow = document.getElementById(`ledger-row-${{probeId}}`);
                     if (ledgerRow && ledgerRow.getAttribute('data-resolved') !== 'true') {{
                         ledgerRow.setAttribute('data-resolved', 'true');
@@ -1428,7 +1234,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                         if (badge) {{ badge.className = 'badge badge-success'; badge.style.cssText = ''; badge.innerText = 'Fixed'; }}
                         flipBtn(document.querySelector(`button[data-resolve-ledger="${{probeId}}"]`));
                     }}
-
                 }} else if (context === 'code') {{
                     const probeEl = document.getElementById(`code-probe-${{probeId}}`);
                     resolveProbeEl(probeEl);
@@ -1436,7 +1241,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                         const list = probeEl.closest('ul');
                         if (list) updateCodeBadge(list.id.replace('list-code-t2-', ''));
                     }}
-
                 }} else if (context === 'ledger') {{
                     const row = document.getElementById(`ledger-row-${{probeId}}`);
                     if (row) {{
@@ -1446,25 +1250,20 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                         if (badge) {{ badge.className = 'badge badge-success'; badge.style.cssText = ''; badge.innerText = 'Fixed'; }}
                     }}
                 }}
-
                 flipBtn(btn);
                 saveState();
             }}
 
-            // ── Bulk Triage Modal ────────────────────────────────────────
             let _bulkState = {{ testId: null, groups: {{}} }};
 
             function openBulkTriageModal(testId, testFqcn) {{
                 const survivedList = document.getElementById(`list-t1-${{testId}}`);
                 if (!survivedList) return;
-
                 const unreviewed = Array.from(survivedList.querySelectorAll('li[data-state="unreviewed"]'));
                 if (unreviewed.length === 0) {{
                     showToast('No unreviewed probes remaining in this test.', 'success');
                     return;
                 }}
-
-                // Group by target FQCN (class level)
                 const groups = {{}};
                 unreviewed.forEach(probeEl => {{
                     const fqcn = probeEl.getAttribute('data-target-fqcn') || 'unknown';
@@ -1474,20 +1273,13 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                         desc: probeEl.querySelector('.probe-desc') ? probeEl.querySelector('.probe-desc').textContent.trim() : ''
                     }});
                 }});
-
                 _bulkState = {{ testId, groups }};
-
-                // Build tree UI — sorted by probe count descending
                 const sortedFqcns = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
                 const totalProbes = unreviewed.length;
                 const testShortName = testFqcn.split('.').pop();
-
-                // Header info
                 document.getElementById('bulkModalTitle').innerText = `Bulk Triage — ${{testShortName}}`;
                 document.getElementById('bulkModalSubtitle').innerText =
                     `${{totalProbes}} unreviewed probe${{totalProbes !== 1 ? 's' : ''}} across ${{sortedFqcns.length}} target class${{sortedFqcns.length !== 1 ? 'es' : ''}}`;
-
-                // Build tree rows
                 let treeHtml = '';
                 sortedFqcns.forEach((fqcn, idx) => {{
                     const probes = groups[fqcn];
@@ -1495,7 +1287,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     const pkg = fqcn === 'unknown' ? '' : fqcn.split('.').slice(0, -1).join('.');
                     const nodeId = `bulk-node-${{idx}}`;
                     const isFirst = idx === 0;
-
                     const probeRows = probes.map(p => `
                         <div class="bulk-probe-row" data-probe-id="${{p.probeId}}">
                             <label style="display:flex; align-items:flex-start; gap:10px; padding:6px 8px; border-radius:var(--radius-sm); cursor:pointer; transition:background 0.1s;"
@@ -1505,7 +1296,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                                 <span style="font-family:ui-monospace,monospace;font-size:12px;color:var(--text-muted);line-height:1.4;">${{p.desc}}</span>
                             </label>
                         </div>`).join('');
-
                     treeHtml += `
                     <div class="bulk-class-node" style="border:1px solid var(--border-color);border-radius:var(--radius-md);overflow:hidden;margin-bottom:8px;">
                         <div class="bulk-node-header" style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:#f8fafc;cursor:pointer;user-select:none;"
@@ -1525,7 +1315,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                         </div>
                     </div>`;
                 }});
-
                 document.getElementById('bulkModalTree').innerHTML = treeHtml;
                 document.getElementById('bulkModal').style.display = 'block';
                 document.body.style.overflow = 'hidden';
@@ -1540,7 +1329,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             }}
 
             function toggleClassCheck(masterCb, fqcn) {{
-                // Sync all probe checkboxes under this class
                 document.querySelectorAll(`#bulkModalTree input[data-fqcn="${{fqcn}}"][data-probe]`).forEach(cb => {{
                     cb.checked = masterCb.checked;
                 }});
@@ -1566,18 +1354,15 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 _bulkState = {{ testId: null, groups: {{}} }};
             }}
 
-            // Keep old closeSweepModal as alias so any stale references don't break
             function closeSweepModal() {{ closeBulkModal(); }}
-            function triageCode(methodId, probeId, decisionType, tagText) {{
 
+            function triageCode(methodId, probeId, decisionType, tagText) {{
                 const actionsContainer = document.getElementById(`code-actions-${{probeId}}`);
                 let tagClass = decisionType === 'action-code' ? 'tag-action' : 'tag-noise';
                 actionsContainer.innerHTML = `<span class="triage-tag ${{tagClass}}">[ ${{tagText}} ]</span>`;
-
                 const codeProbeEl = document.getElementById(`code-probe-${{probeId}}`);
                 if(codeProbeEl) {{
                     codeProbeEl.setAttribute('data-state', decisionType);
-
                     if (decisionType === 'action-code') {{
                         codeProbeEl.classList.add('action-required');
                         codeProbeEl.classList.remove('noise-item');
@@ -1586,15 +1371,12 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     }} else if (decisionType === 'equivalent-code') {{
                         codeProbeEl.classList.add('noise-item');
                         codeProbeEl.classList.remove('action-required');
-
-                        // Move to Local Noise List inside Code-Centric tab
                         const noiseList = document.getElementById(`list-code-noise-${{methodId}}`);
                         const noiseContainer = document.getElementById(`code-noise-section-${{methodId}}`);
                         if(noiseContainer) noiseContainer.style.display = 'block';
                         if(noiseList) noiseList.appendChild(codeProbeEl);
                     }}
                 }}
-
                 updateCodeAccordionCounts(methodId);
                 updateCodeBadge(methodId);
                 saveState();
@@ -1618,17 +1400,13 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             function updateCodeBadge(methodId) {{
                 const methodContainer = document.getElementById(`code-desc-${{methodId}}`);
                 if(!methodContainer) return;
-
                 const total = methodContainer.querySelectorAll('li.probe-item').length;
                 const triaged = methodContainer.querySelectorAll('li.probe-item[data-state]').length;
                 const unreviewed = total - triaged;
                 const needsAction = methodContainer.querySelectorAll('li.probe-item[data-state="action-code"]').length;
-
                 const badgeEl = document.getElementById(`code-badge-${{methodId}}`);
-
                 const resolvedCode = methodContainer.querySelectorAll('li.probe-item[data-state="action-code"][data-resolved="true"]').length;
                 const pendingAction = needsAction - resolvedCode;
-
                 if (unreviewed === 0 && pendingAction === 0 && resolvedCode > 0) {{
                     badgeEl.innerHTML = `<span class="status-pill resolved">[ ${{resolvedCode}} Fixed ]</span>`;
                 }} else if (unreviewed === 0 && pendingAction === 0) {{
@@ -1640,22 +1418,16 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 }} else {{
                     badgeEl.innerHTML = `<span class="status-pill pending">[ ${{unreviewed}} Unreviewed ]</span>`;
                 }}
-
-                // Update Code Global Metrics
                 const t2UnreviewedGlobal = document.querySelectorAll('#code-view li.probe-item[data-state="unreviewed"]').length;
                 const t2ActionGlobal = document.querySelectorAll('#code-view li.probe-item[data-state="action-code"]').length;
                 const t2NoiseGlobal = document.querySelectorAll('#code-view li.probe-item[data-state="equivalent-code"]').length;
                 const fullyTriagedGlobal = document.querySelectorAll('#code-view .status-pill.clear, #code-view .status-pill.action').length;
-
                 const uiT2Inbox = document.getElementById('ui-t2-inbox');
                 if(uiT2Inbox) uiT2Inbox.innerText = t2UnreviewedGlobal + ' / ' + window.initialT2Count;
-
                 const uiT2Action = document.getElementById('ui-t2-action');
                 if(uiT2Action) uiT2Action.innerText = t2ActionGlobal;
-
                 const uiT2Noise = document.getElementById('ui-t2-noise');
                 if(uiT2Noise) uiT2Noise.innerText = t2NoiseGlobal;
-
                 const uiTriagedMethods = document.getElementById('ui-triaged-methods');
                 if(uiTriagedMethods) uiTriagedMethods.innerText = fullyTriagedGlobal + ' / ' + window.totalMethodCount;
             }}
@@ -1666,7 +1438,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     const tbody = document.getElementById(`tbody-ledger-${{sec}}`);
                     const countSpan = document.getElementById(`count-ledger-${{sec}}`);
                     if (tbody && countSpan) {{
-                        const count = tbody.children.length / 2; // Each probe has 2 TRs (main + desc)
+                        const count = tbody.children.length / 2;
                         countSpan.innerText = `[${{count}} Probes]`;
                     }}
                 }});
@@ -1679,14 +1451,12 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     const header = document.getElementById(`count-t1-${{testId}}`);
                     if (header) header.innerText = `[${{count}} Probes]`;
                 }}
-
                 const listCascaded = document.getElementById(`list-cascaded-${{testId}}`);
                 if (listCascaded) {{
                     const count = listCascaded.querySelectorAll('li').length;
                     const header = document.getElementById(`count-cascaded-${{testId}}`);
                     if (header) header.innerText = `[${{count}} Probes]`;
                 }}
-
                 const listNoise = document.getElementById(`list-noise-${{testId}}`);
                 if (listNoise) {{
                     const count = listNoise.querySelectorAll('li').length;
@@ -1700,9 +1470,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 const unreviewed  = testContainer.querySelectorAll('li[data-state="unreviewed"]').length;
                 const needsAction = testContainer.querySelectorAll('li[data-state="action"]:not([data-resolved="true"])').length;
                 const resolved    = testContainer.querySelectorAll('li[data-state="action"][data-resolved="true"]').length;
-
                 const badgeEl = document.getElementById(`badge-${{testId}}`);
-
                 if (unreviewed === 0 && needsAction === 0 && resolved > 0) {{
                     badgeEl.innerHTML = `<span class="status-pill resolved">[ ${{resolved}} Fixed ]</span>`;
                 }} else if (unreviewed === 0 && needsAction === 0) {{
@@ -1714,7 +1482,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 }} else {{
                     badgeEl.innerHTML = `<span class="status-pill pending">[ ${{unreviewed}} Unreviewed ]</span>`;
                 }}
-
                 updateGlobalMetrics();
             }}
 
@@ -1723,36 +1490,28 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 const confirmedBugs = document.querySelectorAll('#test-view li[data-state="action"]').length;
                 const noiseBugs = document.querySelectorAll('#test-view li[data-state="equivalent"], #test-view li[data-state="noise"]').length;
                 const fullyTriaged = document.querySelectorAll('#test-view .status-pill.clear, #test-view .status-pill.action').length;
-
                 const inboxEl = document.getElementById('ui-t1-inbox');
                 if(inboxEl) inboxEl.innerText = t1Unreviewed + ' / ' + window.initialT1Count;
-
                 const actionEl = document.getElementById('ui-t1-action');
                 if(actionEl) actionEl.innerText = confirmedBugs;
-
                 const noiseEl = document.getElementById('ui-t1-noise');
                 if(noiseEl) noiseEl.innerText = noiseBugs;
-
                 const triagedEl = document.getElementById('ui-triaged-tests');
                 if(triagedEl) triagedEl.innerText = fullyTriaged + ' / ' + window.totalTestCount;
             }}
 
             function openCodeModal(class1, method1, class2, method2) {{
                 const targetPane = document.getElementById('modalTargetPane');
-
                 if (class2 && class2 !== 'null') {{
                     document.getElementById('modalTestTitle').innerHTML = 'Test Class <span class="pane-subtitle">— ' + class1 + '.' + method1 + '()</span>';
                     document.getElementById('modalTargetTitle').innerHTML = 'Target Class <span class="pane-subtitle">— ' + class2 + '.' + method2 + '()</span>';
-
                     targetPane.style.display = 'flex';
                     renderAndHighlight('modalTargetCode', fileCache[class2], method2);
                 }} else {{
                     document.getElementById('modalTestTitle').innerHTML = 'Source Code <span class="pane-subtitle">— ' + class1 + '.' + method1 + '()</span>';
                     targetPane.style.display = 'none';
                 }}
-
                 renderAndHighlight('modalTestCode', fileCache[class1], method1);
-
                 document.getElementById('codeModal').style.display = "block";
                 document.body.style.overflow = "hidden";
             }}
@@ -1949,7 +1708,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                 document.body.style.overflow = "auto";
             }}
 
-            // ── Bootstrap: replay localStorage on load ────────────────────
             document.addEventListener('DOMContentLoaded', () => {{
                 try {{
                     const saved = localStorage.getItem(_STORAGE_KEY);
@@ -1960,7 +1718,6 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     }}
                 }} catch(e) {{}}
 
-                // Wire up the hidden file input for JSON import
                 const fileInput = document.getElementById('import-file-input');
                 if (fileInput) {{
                     fileInput.addEventListener('change', e => {{
@@ -1976,19 +1733,13 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     container.innerHTML = "<pre><code>// File content not available or could not be read.</code></pre>";
                     return;
                 }}
-
                 let escapedCode = code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
                 container.innerHTML = `<pre><code class="language-java">${{escapedCode}}</code></pre>`;
-
                 hljs.highlightElement(container.querySelector('code'));
-
-                // Regex uses positive lookahead (?=\\s*\\() to ensure we only highlight method calls 
-                // and skip highlighting generic words like 'of' or 'get' in comments.
                 if (methodName && methodName !== 'unknown' && methodName !== '<init>') {{
                     const codeEl = container.querySelector('code');
                     const regex = new RegExp("(\\\\b" + methodName + "\\\\b)(?=(?:<[^>]+>)*\\\\s*\\\\()", "g");
                     codeEl.innerHTML = codeEl.innerHTML.replace(regex, "<mark class='scroll-target'>$1</mark>");
-
                     setTimeout(() => {{
                         const targets = container.querySelectorAll('.scroll-target');
                         if (targets.length > 0) {{
@@ -2020,217 +1771,3 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
         f.write(html_content)
 
     return html_path
-
-
-def main():
-    if len(sys.argv) != 4:
-        sys.exit("Usage: python3 run-agent-web.py <project_dir> <agent_jar> <target_package>")
-
-    script_start = time.time()
-    project_dir, agent_jar, target_package = sys.argv[1:4]
-
-    target = os.path.join(project_dir, OUT_DIR)
-    os.makedirs(target, exist_ok=True)
-    log_path = os.path.join(target, "execution.log")
-    log_file = open(log_path, "w", encoding="utf-8")
-    try:
-        probes, hits, discovery_duration = discovery(project_dir, agent_jar, target_package, log_file)
-        dynamic_timeout = max(discovery_duration * 2.0, 10.0)
-        log_file.write(f"Set strict timeout limit for evaluations: {dynamic_timeout:.2f} seconds\n")
-
-        # ── Master probe registry — every discovered probe lives here ──
-        # status: 'Un-hit' | 'Survived' | 'Clean Kill' | 'Dirty Kill' | 'TIMEOUT'
-        # test_outcomes maps test_name -> 'clean' | 'dirty' | 'survived' | 'timeout'
-        master_probes = {}
-        for pid, probe_desc in sorted(probes.items()):
-            mod, fqcn, m_name = parse_probe(probe_desc)
-            master_probes[pid] = {
-                'id': pid, 'desc': probe_desc, 'fqcn': fqcn, 'method': m_name,
-                'status': 'Un-hit', 'test_outcomes': {}
-            }
-
-        dashboard_tests = defaultdict(lambda: {'probes': []})
-        dashboard_methods = defaultdict(lambda: {'fqcn': '', 'method': '', 'tests': set(), 'probes': []})
-
-        global_tier3_probes = {}   # probe_id -> first test that clean-killed it
-        errors_count = skipped_count = 0
-
-        total_probes = len(probes)
-        current_probe_idx = 0
-
-        for pid, probe_desc in sorted(probes.items()):
-            current_probe_idx += 1
-            print(f"({current_probe_idx}/{total_probes}) Probe {pid}: {probe_desc}")
-            log_file.write(f"\nProbe {pid}: {probe_desc}\n")
-
-            tests = hits.get(pid)
-            mp = master_probes[pid]
-            fqcn = mp['fqcn']
-            m_name = mp['method']
-            mod = parse_probe(probe_desc)[0]
-
-            if not tests:
-                log_file.write("  SKIP: No tests hit this probe\n")
-                skipped_count += 1
-                # Un-hit stays as-is; still visible in probe-centric tab
-                continue
-
-            sorted_tests = sorted(tests)
-
-            test_results_dict, p_count, f_count, is_timeout, actions_map = evaluate(
-                pid, tests, project_dir, agent_jar, target_package, dynamic_timeout, log_file
-            )
-
-            if is_timeout:
-                # Mark all touching tests as timeout
-                for t in sorted_tests:
-                    mp['test_outcomes'][t] = 'timeout'
-                mp['status'] = 'TIMEOUT'
-
-                method_key = f"{fqcn}#{m_name}"
-                dashboard_methods[method_key]['fqcn'] = fqcn
-                dashboard_methods[method_key]['method'] = m_name
-                dashboard_methods[method_key]['tests'].update(tests)
-                dashboard_methods[method_key]['probes'].append({
-                    'id': pid, 'desc': probe_desc, 'tests': sorted_tests,
-                    'actions': ['Infinite Loop / Timeout'],
-                    'exceptions': ['TIMEOUT: Execution exceeded time limit']
-                })
-
-            elif test_results_dict:
-                probe_exceptions = set()
-                has_clean = has_dirty = has_survived = False
-
-                for t_name, status in test_results_dict.items():
-                    s_up = status.upper()
-                    t_actions = actions_map.get(t_name, [])
-
-                    if "FAIL" in s_up:
-                        if "ASSERT" in s_up or "COMPARISON" in s_up or "MULTIPLEFAILURES" in s_up:
-                            # Clean kill — assertion-level failure
-                            mp['test_outcomes'][t_name] = 'clean'
-                            has_clean = True
-                            if pid not in global_tier3_probes:
-                                global_tier3_probes[pid] = t_name
-                            dashboard_tests[t_name]['probes'].append({
-                                'id': pid, 'desc': probe_desc, 'status': status,
-                                'tier': 3, 'actions': t_actions
-                            })
-                        else:
-                            # Dirty kill — exception-level failure
-                            mp['test_outcomes'][t_name] = 'dirty'
-                            has_dirty = True
-                            clean_exc = status.replace("FAIL (", "").rstrip(")") if status.startswith("FAIL (") else status
-                            probe_exceptions.add(clean_exc)
-                            # Also record for test-centric tab (so footprint is complete)
-                            dashboard_tests[t_name]['probes'].append({
-                                'id': pid, 'desc': probe_desc, 'status': status,
-                                'tier': 2, 'actions': t_actions
-                            })
-                    elif "PASS" in s_up:
-                        mp['test_outcomes'][t_name] = 'survived'
-                        has_survived = True
-                        dashboard_tests[t_name]['probes'].append({
-                            'id': pid, 'desc': probe_desc, 'status': status,
-                            'tier': 1, 'actions': t_actions
-                        })
-
-                # Determine overall probe status
-                if has_clean:
-                    mp['status'] = 'Clean Kill'
-                elif has_dirty:
-                    mp['status'] = 'Dirty Kill'
-                elif has_survived:
-                    mp['status'] = 'Survived'
-
-                # Feed Code-Centric tab for dirty-kill probes
-                if has_dirty and not has_clean:
-                    method_key = f"{fqcn}#{m_name}"
-                    dashboard_methods[method_key]['fqcn'] = fqcn
-                    dashboard_methods[method_key]['method'] = m_name
-                    dashboard_methods[method_key]['tests'].update(tests)
-                    rep_actions = actions_map.get(sorted_tests[0], []) if sorted_tests else []
-                    dashboard_methods[method_key]['probes'].append({
-                        'id': pid, 'desc': probe_desc, 'tests': sorted_tests,
-                        'actions': rep_actions,
-                        'exceptions': sorted(list(probe_exceptions))
-                    })
-            else:
-                errors_count += 1
-
-        # ── Build dashboard_ledger from master_probes ──────────────────
-        dashboard_ledger = []
-        for pid, mp in sorted(master_probes.items(), key=lambda x: -len(x[1]['test_outcomes'])):
-            if mp['status'] in ('Survived', 'Clean Kill'):
-                tier = 1 if mp['status'] == 'Survived' else 3
-                dashboard_ledger.append({
-                    'id': mp['id'], 'desc': mp['desc'], 'fqcn': mp['fqcn'],
-                    'method': mp['method'],
-                    'tests': sorted(mp['test_outcomes'].keys()),
-                    'tier': tier
-                })
-
-        # ── Absolute probe metrics ─────────────────────────────────────
-        total_discovered  = len(master_probes)
-        total_unhit       = sum(1 for mp in master_probes.values() if mp['status'] == 'Un-hit')
-        total_executed    = total_discovered - total_unhit
-        clean_kills_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Clean Kill')
-        dirty_kills_count = sum(1 for mp in master_probes.values() if mp['status'] in ('Dirty Kill', 'TIMEOUT'))
-        survivals_count   = sum(1 for mp in master_probes.values() if mp['status'] == 'Survived')
-
-        # ── Per-test summary for Test-Centric tab ──────────────────────
-        test_summary = {}   # test_name -> {clean, dirty, survived, vulnerable}
-        for pid, mp in master_probes.items():
-            for t_name, outcome in mp['test_outcomes'].items():
-                if t_name not in test_summary:
-                    test_summary[t_name] = {'clean': 0, 'dirty': 0, 'survived': 0}
-                test_summary[t_name][outcome if outcome in ('clean', 'dirty', 'survived') else 'dirty'] += 1
-        for t_name, s in test_summary.items():
-            s['vulnerable'] = s['survived'] > 0
-
-        vulnerable_tests_count = sum(1 for s in test_summary.values() if s['vulnerable'])
-
-        total_duration = time.time() - script_start
-
-        analytics_text = f"""
-        {'=' * 60}
-                         FINAL ANALYTICS
-        {'=' * 60}
-        Total Probes Discovered : {total_discovered}
-        Probes Executed         : {total_executed}
-        Un-hit / Dead Code      : {total_unhit}
-        Errors (No Outcomes)    : {errors_count}
-        {'-' * 60}
-        PROBE OUTCOMES:
-        Clean Kills             : {clean_kills_count}
-        Dirty Kills / Timeouts  : {dirty_kills_count}
-        Survived (Vulnerability): {survivals_count}
-        {'-' * 60}
-        VULNERABLE TESTS        : {vulnerable_tests_count}
-        {'=' * 60}
-        """
-        log_file.write(analytics_text + "\n")
-
-        metrics = {
-            'total_discovered':  total_discovered,
-            'total_unhit':       total_unhit,
-            'total_executed':    total_executed,
-            'clean_kills':       clean_kills_count,
-            'dirty_kills':       dirty_kills_count,
-            'survivals':         survivals_count,
-            'vulnerable_tests':  vulnerable_tests_count,
-        }
-
-        html_file = generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, dashboard_tests,
-                                       test_summary, metrics, global_tier3_probes, master_probes)
-
-        log_file.write(f"\nDashboard generated at: {html_file}\n")
-        print(f"\nDashboard generated at: {html_file}")
-    finally:
-        log_file.close()
-
-    webbrowser.open('file://' + os.path.realpath(html_file))
-
-
-if __name__ == "__main__":
-    main()
