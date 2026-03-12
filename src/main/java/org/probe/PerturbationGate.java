@@ -34,6 +34,15 @@ public class PerturbationGate {
         return value;
     }
 
+    public static boolean checkAndTrackObject(Object value, int probeId) {
+        String testId = track(probeId);
+        if (PerturbationController.isActive(probeId)) {
+            ProbeExecutionTracker.recordAction(testId, value, "null");
+            return true;
+        }
+        return false;
+    }
+
     private static String track(int probeId) {
         String test = TestContext.getCurrent();
         if (test != null) {

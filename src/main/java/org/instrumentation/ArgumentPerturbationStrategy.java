@@ -39,17 +39,13 @@ public class ArgumentPerturbationStrategy implements PerturbationStrategy {
             int probeId = ProbeCatalog.idForLocation(argKey);
 
             if (probeId != -1) {
-                String typeName = "Object";
                 if (currentArg instanceof Integer num) {
-                    typeName = "Integer";
                     modifiedArgs[i] = PerturbationGate.apply(num.intValue(), probeId);
                 } else if (currentArg instanceof Boolean bool) {
-                    typeName = "boolean";
                     modifiedArgs[i] = PerturbationGate.apply(bool.booleanValue(), probeId);
                 } else {
                     modifiedArgs[i] = PerturbationGate.apply(currentArg, probeId);
                 }
-
                 writeBack = true;
             }
         }

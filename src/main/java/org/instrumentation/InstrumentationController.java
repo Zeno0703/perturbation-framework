@@ -1,6 +1,7 @@
 package org.instrumentation;
 
 import net.bytebuddy.agent.builder.AgentBuilder;
+import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
 import org.probe.PerturbationGate;
 
@@ -56,6 +57,7 @@ public class InstrumentationController {
                     return isProductionCode(pd);
                 })
                 .transform((builderInstance, type, loader, module, domain) -> {
+
                     for (net.bytebuddy.description.method.MethodDescription.InDefinedShape method : type.getDeclaredMethods()) {
                         if (method.isConstructor() || method.isAbstract() || method.isNative() || method.isTypeInitializer()) continue;
                         if (method.isSynthetic() || method.isBridge() || method.getName().contains("$")) continue;
@@ -63,13 +65,14 @@ public class InstrumentationController {
 
                         String locationKey = method.toString();
 
-                        if (method.getReturnType().represents(int.class)) {
+                        TypeDescription.Generic retType = method.getReturnType();
+                        if (retType.represents(int.class) || retType.represents(short.class) || retType.represents(byte.class) || retType.represents(char.class)) {
                             int id = org.probe.ProbeCatalog.idForLocation(locationKey);
-                            org.probe.ProbeCatalog.describe(id, "Modified int return value in " + locationKey);
-                        } else if (method.getReturnType().represents(boolean.class)) {
+                            org.probe.ProbeCatalog.describe(id, "Modified Integer return value in " + locationKey);
+                        } else if (retType.represents(boolean.class)) {
                             int id = org.probe.ProbeCatalog.idForLocation(locationKey);
                             org.probe.ProbeCatalog.describe(id, "Modified boolean return value in " + locationKey);
-                        } else if (!method.getReturnType().represents(void.class)) {
+                        } else if (!retType.represents(void.class)) {
                             int id = org.probe.ProbeCatalog.idForLocation(locationKey);
                             org.probe.ProbeCatalog.describe(id, "Modified Object return value in " + locationKey);
                         }
@@ -79,11 +82,16 @@ public class InstrumentationController {
                             String argKey = locationKey + ":arg:" + i;
                             int id = org.probe.ProbeCatalog.idForLocation(argKey);
 
+                            TypeDescription.Generic pType = method.getParameters().get(i).getType();
                             String typeName = "Object";
-                            if (method.getParameters().get(i).getType().represents(int.class)) typeName = "Integer";
-                            else if (method.getParameters().get(i).getType().represents(boolean.class)) typeName = "boolean";
 
-                            org.probe.ProbeCatalog.describe(id, "Modified " + typeName + " argument at index " + i + " in " + locationKey);
+                            if (pType.represents(int.class) || pType.represents(short.class) || pType.represents(byte.class) || pType.represents(char.class)) {
+                                typeName = "Integer";
+                            } else if (pType.represents(boolean.class)) {
+                                typeName = "boolean";
+                            }
+
+                            org.probe.ProbeCatalog.describe(id, "Modified " + typeName + " argument " + (i + 1) + " in " + locationKey);
                         }
                     }
 
@@ -100,13 +108,10 @@ public class InstrumentationController {
         if (pd == null || pd.getCodeSource() == null || pd.getCodeSource().getLocation() == null) {
             return false;
         }
-
         String loc = pd.getCodeSource().getLocation().toString();
-
         if (loc.contains("/target/test-classes") || loc.contains("\\target\\test-classes")) {
             return false;
         }
-
         return loc.contains("/target/classes") || loc.contains("\\target\\classes");
     }
 }

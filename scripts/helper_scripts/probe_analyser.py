@@ -17,19 +17,24 @@ except ModuleNotFoundError:
 
 def parse_probe(desc):
     """
-    Extract (modification_type, fqcn, method_name) from a probe description string.
-
-    Returns ("unknown", "unknown", "unknown") on parse failure.
+    Robustly extract (modification_type, fqcn, method_name) from a probe description.
     """
-    match = re.search(r'Modified (.*?) in (.*)', desc)
-    if not match:
+    parts = desc.rsplit(" in ", 1)
+    if len(parts) != 2:
         return "unknown", "unknown", "unknown"
-    mod = match.group(1)
-    sig = match.group(2)
 
-    cm_match = re.search(r'([\w\.\$]+)\.([\w\$]+)\(', sig)
+    mod = parts[0].replace("Modified ", "").strip()
+    sig = parts[1].strip()
+
+    cm_match = re.search(r'([\w\.\$]+)\.([\w\$<>\-]+)\(', sig)
     if cm_match:
         return mod, cm_match.group(1), cm_match.group(2)
+
+    constructor_match = re.search(r'([\w\.\$]+)\(', sig)
+    if constructor_match:
+        fqcn = constructor_match.group(1)
+        return mod, fqcn, fqcn.split('.')[-1]
+
     return mod, "unknown", "unknown"
 
 
@@ -87,7 +92,9 @@ def discovery(project_dir, agent_jar, target_package, log_file):
     if code != 0:
         sys.exit(f"Discovery failed:\n{stderr[-1000:]}")
 
-    probes = read_probes(project_dir)
+    raw_probes = read_probes(project_dir)
+    probes = {pid: desc for pid, desc in raw_probes.items() if parse_probe(desc)[1] != "unknown"}
+
     if not probes:
         sys.exit("No probes found.")
 
