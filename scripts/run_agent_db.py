@@ -9,7 +9,6 @@ from collections import defaultdict
 from helper_scripts.maven_runner import run_maven
 from helper_scripts.artifact_reader import (
     read_probes,
-    read_hits,
     read_test_outcomes,
     read_perturbations,
 )
@@ -30,11 +29,6 @@ PROJECTS = [
         "name": "Joda-Money",
     },
     {
-        "dir": "/Users/zenovandenbulcke/Documents/Textr",
-        "package": "org.group02",
-        "name": "Textr",
-    },
-    {
         "dir": "/Users/zenovandenbulcke/Documents/commons-cli",
         "package": "org.apache.commons.cli",
         "name": "Commons-CLI",
@@ -48,6 +42,11 @@ PROJECTS = [
         "dir": "/Users/zenovandenbulcke/Documents/commons-validator",
         "package": "org.apache.commons.validator",
         "name": "Commons-Validator",
+    },
+    {
+        "dir": "/Users/zenovandenbulcke/Documents/Textr",
+        "package": "org.group02",
+        "name": "Textr",
     },
 ]
 
@@ -179,25 +178,64 @@ def process_project(project, agent_jar):
         print(f"[{p_name}] No probes found after discovery. Skipping project.")
         return [], []
 
-    hits = read_hits(p_dir)
+    # The LVT is a compiler-level setting applied globally via Maven's -g flag.
+    # If ANY probe has a proper named description, the project has debug info
+    # throughout. In that case we drop:
+    #   1. JVM-slot probes ("(JVM slot N)") — compiler ghosts with no name.
+    #   2. Probes with no description or an unparseable FQCN — these are probes
+    #      registered via idForLocation but never described by ProbeCatalog
+    #      (the "probe 190225529..." case: a ghost slot inside a method that
+    #      otherwise has LVT entries for other slots).
+    # If NO probe has a proper named description, debug info is globally absent
+    # and we keep the JVM-slot probes as the only available information.
+    def _is_named(d):
+        # Named = has a real description, no JVM-slot tag, and a parseable FQCN
+        if not d or re.search(r'\(JVM slot \d+\)', d):
+            return False
+        _, _, _, fq, _ = parse_probe_desc(d)
+        return fq != "Unknown"
+
+    project_has_named = any(_is_named(d) for d in raw_probes.values())
+
+    if project_has_named:
+        probes = {pid: desc for pid, desc in raw_probes.items() if _is_named(desc)}
+        dropped = len(raw_probes) - len(probes)
+        if dropped:
+            print(f"[{p_name}] Filtered out {dropped} ghost/unnamed probe(s) "
+                  f"(project has debug info; JVM-slot and undescribed probes excluded).")
+    else:
+        # No LVT anywhere, keep everything that at least has a parseable FQCN
+        probes = {pid: desc for pid, desc in raw_probes.items()
+                  if parse_probe_desc(desc)[3] != "Unknown"}
+        print(f"[{p_name}] No debug info detected — keeping JVM-slot probes as fallback.")
+
+    if not probes:
+        print(f"[{p_name}] No actionable probes remain after filtering. Skipping project.")
+        return [], []
 
     from helper_scripts.artifact_reader import read_artifact
+    all_hit_pairs = read_artifact(p_dir, "hits.txt")
+
+    hits = defaultdict(set)
     hit_counts = defaultdict(lambda: defaultdict(int))
-    for pid_str, test in read_artifact(p_dir, "hits.txt"):
-        hit_counts[int(pid_str)][test] += 1
+    for pid_str, test in all_hit_pairs:
+        pid_int = int(pid_str)
+        if pid_int in probes:
+            hits[pid_int].add(test)
+            hit_counts[pid_int][test] += 1
 
     dynamic_timeout = max(discovery_duration * 2.0, 10.0)
-    total_probes = len(raw_probes)
+    total_probes = len(probes)
     print(
         f"[{p_name}] Discovery done in {discovery_duration:.1f}s. "
-        f"Found {total_probes} probes. Timeout: {dynamic_timeout:.1f}s"
+        f"Found {total_probes} actionable probes. Timeout: {dynamic_timeout:.1f}s"
     )
 
     probes_db = []
     test_executions_db = []
 
     # ── Phase 2: Evaluation ────────────────────────────────────────────────
-    for idx, (pid, desc) in enumerate(sorted(raw_probes.items()), 1):
+    for idx, (pid, desc) in enumerate(sorted(probes.items()), 1):
         tests_hitting_probe = sorted(hits.get(pid, set()))
         modifier, location, operator, fqcn, method = parse_probe_desc(desc)
 

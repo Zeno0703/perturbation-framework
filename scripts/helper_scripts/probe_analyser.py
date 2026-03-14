@@ -94,34 +94,39 @@ def discovery(project_dir, agent_jar, target_package, log_file):
 
     raw_probes = read_probes(project_dir)
 
-    # Filter ghost probes on a per-method basis, mirroring the Java agent's
-    # per-method LVT logic in VariablePerturbationStrategy:
-    #   - If a method has at least one properly-named probe, any JVM-slot
-    #     fallback probes in that same method are compiler ghosts → drop them.
-    #   - If a method has ONLY JVM-slot probes (LVT was blocked/stripped),
-    #     keep them — they are the only information available for that method.
-    # Probes whose FQCN cannot be parsed at all are always dropped.
-    def _method_key(d):
-        _, fq, mth = parse_probe(d)
-        return f"{fq}#{mth}"
+    # Ghost probe filtering (project-level).
+    # The LVT is a compiler-level setting applied globally via Maven's -g flag.
+    # If ANY probe has a proper named description, debug info is present throughout.
+    # In that case drop:
+    #   1. JVM-slot probes ("(JVM slot N)") - compiler ghosts with no name.
+    #   2. Probes with no description or unparseable FQCN - registered via
+    #      idForLocation but never described by ProbeCatalog (ghost slot inside
+    #      a method that has LVT entries for other slots, e.g. "probe 190225529").
+    # If NO probe has a proper named description, debug info is globally absent;
+    # keep JVM-slot probes as the only available information.
+    def _is_named(d):
+        if not d or re.search(r"\(JVM slot \d+\)", d):
+            return False
+        return parse_probe(d)[1] != "unknown"
 
-    is_jvm_slot = {
-        pid: bool(re.search(r'\(JVM slot \d+\)', desc))
-        for pid, desc in raw_probes.items()
-    }
-    methods_with_named = {
-        _method_key(desc)
-        for pid, desc in raw_probes.items()
-        if not is_jvm_slot[pid] and parse_probe(desc)[1] != "unknown"
-    }
-    probes = {
-        pid: desc for pid, desc in raw_probes.items()
-        if parse_probe(desc)[1] != "unknown"
-        and not (is_jvm_slot[pid] and _method_key(desc) in methods_with_named)
-    }
+    project_has_named = any(_is_named(d) for d in raw_probes.values())
+
+    if project_has_named:
+        probes = {pid: desc for pid, desc in raw_probes.items() if _is_named(desc)}
+        dropped = len(raw_probes) - len(probes)
+        if dropped:
+            log_file.write(
+                f"Filtered out {dropped} ghost/unnamed probe(s) "
+                f"(project has debug info; JVM-slot and undescribed probes excluded).\n"
+            )
+    else:
+        probes = {pid: desc for pid, desc in raw_probes.items()
+                  if parse_probe(desc)[1] != "unknown"}
+        log_file.write("No debug info detected - keeping JVM-slot probes as fallback.\n")
 
     if not probes:
         sys.exit("No probes found.")
+
 
     hits = read_hits(project_dir)
     return probes, hits, discovery_duration

@@ -40,3 +40,5 @@ build/
 
 # Tool caches
 .lens/
+
+scripts/database.json
