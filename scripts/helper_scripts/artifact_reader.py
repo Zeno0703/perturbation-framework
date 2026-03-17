@@ -29,9 +29,9 @@ def read_artifact(project_dir, filename):
             for line in f:
                 if "\t" not in line:
                     continue
-                parts = line.rstrip("\r\n").split("\t", 1)
-                if len(parts) == 2:
-                    result.append([unescape(parts[0]), unescape(parts[1])])
+                parts = line.rstrip("\r\n").split("\t", 2)
+                if len(parts) >= 2:
+                    result.append([unescape(p) for p in parts])
             return result
     except FileNotFoundError:
         return []
@@ -41,7 +41,13 @@ def read_probes(project_dir):
     """
     Return a dict mapping probe_id (int) -> description (str).
     """
-    return {int(k): v for k, v in read_artifact(project_dir, "probes.txt")}
+    result = {}
+    for row in read_artifact(project_dir, "probes.txt"):
+        pid = int(row[0])
+        desc = row[1]
+        line = int(row[2]) if len(row) > 2 and row[2].lstrip('-').isdigit() else -1
+        result[pid] = {'desc': desc, 'line': line}
+    return result
 
 
 def read_hits(project_dir):

@@ -39,6 +39,7 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
         private final String methodName;
         private final List<PendingProbe> pendingProbes = new ArrayList<>();
         private final Map<Integer, LvtData> lvtEntries = new HashMap<>();
+        private int currentLine = -1;
 
         public VariablePerturbationVisitor(int api, MethodVisitor methodVisitor, String methodName) {
             super(api, methodVisitor);
@@ -46,15 +47,23 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
         }
 
         @Override
+        public void visitLineNumber(int line, Label start) {
+            currentLine = line;
+            super.visitLineNumber(line, start);
+        }
+
+        @Override
         public void visitVarInsn(int opcode, int varIndex) {
             if (opcode == Opcodes.ISTORE) {
                 int probeId = ProbeCatalog.idForLocation(methodName + ":var:" + varIndex);
+                ProbeCatalog.setLine(probeId, currentLine);
                 pendingProbes.add(new PendingProbe(probeId, varIndex, "Integer/boolean", false));
 
                 super.visitLdcInsn(probeId);
                 super.visitMethodInsn(Opcodes.INVOKESTATIC, "org/probe/PerturbationGate", "apply", "(II)I", false);
             } else if (opcode == Opcodes.ASTORE) {
                 int probeId = ProbeCatalog.idForLocation(methodName + ":objVar:" + varIndex);
+                ProbeCatalog.setLine(probeId, currentLine);
                 pendingProbes.add(new PendingProbe(probeId, varIndex, "Object", false));
 
                 super.visitInsn(Opcodes.DUP);
@@ -72,6 +81,7 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
         @Override
         public void visitIincInsn(int varIndex, int increment) {
             int probeId = ProbeCatalog.idForLocation(methodName + ":var:" + varIndex);
+            ProbeCatalog.setLine(probeId, currentLine);
             pendingProbes.add(new PendingProbe(probeId, varIndex, "Integer", true));
 
             super.visitVarInsn(Opcodes.ILOAD, varIndex);

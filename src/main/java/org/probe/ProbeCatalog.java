@@ -12,6 +12,7 @@ public class ProbeCatalog {
 
     private static final Map<String, Integer> locations = new ConcurrentHashMap<>();
     private static final Map<Integer, String> descriptions = new ConcurrentHashMap<>();
+    private static final Map<Integer, Integer> lineNumbers = new ConcurrentHashMap<>();
     private static final Set<Integer> probes = ConcurrentHashMap.newKeySet();
     private static volatile boolean frozen = false;
 
@@ -47,10 +48,18 @@ public class ProbeCatalog {
         return descriptions.getOrDefault(probeId, "probe " + probeId);
     }
 
+    public static void setLine(int probeId, int line) {
+        if (line > 0) lineNumbers.put(probeId, line);
+    }
+
+    public static int lineFor(int probeId) {
+        return lineNumbers.getOrDefault(probeId, -1);
+    }
+
     public static void dumpTo(Path file) throws IOException {
         StringBuilder sb = new StringBuilder();
         for (int id : allProbeIds()) {
-            sb.append(id).append("\t").append(descriptionFor(id)).append("\n");
+            sb.append(id).append("\t").append(descriptionFor(id)).append("\t").append(lineFor(id)).append("\n");
         }
         FileUtils.writeAtomic(file, sb.toString());
     }

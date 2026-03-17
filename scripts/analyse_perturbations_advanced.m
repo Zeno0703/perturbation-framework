@@ -15,9 +15,14 @@ clear; clc; close all;
 
 % ── Configuration ─────────────────────────────────────────────────────────
 DB_PATH   = 'database.json';
-SAVE_FIGS = false;
-OUT_DIR   = fileparts(DB_PATH);
-if isempty(OUT_DIR), OUT_DIR = '.'; end
+SAVE_FIGS = true;
+BASE_DIR = fileparts(DB_PATH);
+if isempty(BASE_DIR), BASE_DIR = '.'; end
+
+OUT_DIR = fullfile(BASE_DIR, 'analysis_results');
+if SAVE_FIGS && ~exist(OUT_DIR, 'dir')
+    mkdir(OUT_DIR);
+end
 
 % ── Colour palette ────────────────────────────────────────────────────────
 C_CLEAN   = [0.45 0.75 0.45];
@@ -59,9 +64,13 @@ fprintf('Loaded %d probes, %d test executions, %d project(s).\n', ...
 % =========================================================================
 
 function save_fig(fig, out_dir, name)
-    fname = fullfile(out_dir, [name '.png']);
-    exportgraphics(fig, fname, 'Resolution', 150);
-    fprintf('  Saved: %s\n', fname);
+    png_name = fullfile(out_dir, [name '.png']);
+    exportgraphics(fig, png_name, 'Resolution', 300);
+    
+    pdf_name = fullfile(out_dir, [name '.pdf']);
+    exportgraphics(fig, pdf_name, 'ContentType', 'vector', 'BackgroundColor', 'none');
+    
+    fprintf('  Saved: %s (.png & .pdf)\n', name);
 end
 
 function draw_stacked(ax, pct, totals, x_labels, colors, leg_labels, min_pct)

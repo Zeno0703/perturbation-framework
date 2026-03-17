@@ -189,24 +189,23 @@ def process_project(project, agent_jar):
     # If NO probe has a proper named description, debug info is globally absent
     # and we keep the JVM-slot probes as the only available information.
     def _is_named(d):
-        # Named = has a real description, no JVM-slot tag, and a parseable FQCN
-        if not d or re.search(r'\(JVM slot \d+\)', d):
+        desc = d['desc']
+        if not desc or re.search(r'\(JVM slot \d+\)', desc):
             return False
-        _, _, _, fq, _ = parse_probe_desc(d)
+        _, _, _, fq, _ = parse_probe_desc(desc)
         return fq != "Unknown"
 
     project_has_named = any(_is_named(d) for d in raw_probes.values())
 
     if project_has_named:
-        probes = {pid: desc for pid, desc in raw_probes.items() if _is_named(desc)}
+        probes = {pid: data for pid, data in raw_probes.items() if _is_named(data)}
         dropped = len(raw_probes) - len(probes)
         if dropped:
             print(f"[{p_name}] Filtered out {dropped} ghost/unnamed probe(s) "
                   f"(project has debug info; JVM-slot and undescribed probes excluded).")
     else:
-        # No LVT anywhere, keep everything that at least has a parseable FQCN
-        probes = {pid: desc for pid, desc in raw_probes.items()
-                  if parse_probe_desc(desc)[3] != "Unknown"}
+        probes = {pid: data for pid, data in raw_probes.items()
+                  if parse_probe_desc(data['desc'])[3] != "Unknown"}
         print(f"[{p_name}] No debug info detected — keeping JVM-slot probes as fallback.")
 
     if not probes:
@@ -235,7 +234,8 @@ def process_project(project, agent_jar):
     test_executions_db = []
 
     # ── Phase 2: Evaluation ────────────────────────────────────────────────
-    for idx, (pid, desc) in enumerate(sorted(probes.items()), 1):
+    for idx, (pid, probe_data) in enumerate(sorted(probes.items()), 1):
+        desc = probe_data['desc']
         tests_hitting_probe = sorted(hits.get(pid, set()))
         modifier, location, operator, fqcn, method = parse_probe_desc(desc)
 

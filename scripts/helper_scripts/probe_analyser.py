@@ -105,14 +105,15 @@ def discovery(project_dir, agent_jar, target_package, log_file):
     # If NO probe has a proper named description, debug info is globally absent;
     # keep JVM-slot probes as the only available information.
     def _is_named(d):
-        if not d or re.search(r"\(JVM slot \d+\)", d):
+        desc = d['desc']
+        if not desc or re.search(r"\(JVM slot \d+\)", desc):
             return False
-        return parse_probe(d)[1] != "unknown"
+        return parse_probe(desc)[1] != "unknown"
 
     project_has_named = any(_is_named(d) for d in raw_probes.values())
 
     if project_has_named:
-        probes = {pid: desc for pid, desc in raw_probes.items() if _is_named(desc)}
+        probes = {pid: data for pid, data in raw_probes.items() if _is_named(data)}
         dropped = len(raw_probes) - len(probes)
         if dropped:
             log_file.write(
@@ -120,8 +121,8 @@ def discovery(project_dir, agent_jar, target_package, log_file):
                 f"(project has debug info; JVM-slot and undescribed probes excluded).\n"
             )
     else:
-        probes = {pid: desc for pid, desc in raw_probes.items()
-                  if parse_probe(desc)[1] != "unknown"}
+        probes = {pid: data for pid, data in raw_probes.items()
+                  if parse_probe(data['desc'])[1] != "unknown"}
         log_file.write("No debug info detected - keeping JVM-slot probes as fallback.\n")
 
     if not probes:
@@ -216,7 +217,8 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
     global_tier3_probes: dict  probe_id -> first test that clean-killed it
     """
     master_probes = {}
-    for pid, probe_desc in sorted(probes.items()):
+    for pid, probe_data in sorted(probes.items()):
+        probe_desc = probe_data['desc']
         mod, fqcn, m_name = parse_probe(probe_desc)
         master_probes[pid] = {
             'id': pid, 'desc': probe_desc, 'fqcn': fqcn, 'method': m_name,
@@ -234,10 +236,14 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
     total_probes = len(probes)
     current_probe_idx = 0
 
-    for pid, probe_desc in sorted(probes.items()):
+    for pid, probe_data in sorted(probes.items()):
         current_probe_idx += 1
-        print(f"({current_probe_idx}/{total_probes}) Probe {pid}: {probe_desc}")
-        log_file.write(f"\nProbe {pid}: {probe_desc}\n")
+        probe_desc = probe_data['desc']
+        probe_line = probe_data['line']
+        line_info = f" (line {probe_line})" if probe_line > 0 else ""
+
+        print(f"({current_probe_idx}/{total_probes}) Probe {pid}{line_info}: {probe_desc}")
+        log_file.write(f"\nProbe {pid}{line_info}: {probe_desc}\n")
 
         tests = hits.get(pid)
         mp = master_probes[pid]

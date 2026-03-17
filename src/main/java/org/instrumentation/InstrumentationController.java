@@ -12,6 +12,11 @@ import java.util.List;
 import static net.bytebuddy.matcher.ElementMatchers.nameContains;
 import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 
+import net.bytebuddy.jar.asm.ClassReader;
+import net.bytebuddy.jar.asm.ClassVisitor;
+import net.bytebuddy.jar.asm.MethodVisitor;
+import net.bytebuddy.jar.asm.Opcodes;
+
 public class InstrumentationController {
 
     private static final String TARGET_PACKAGE = System.getProperty("perturb.package", "");
@@ -64,17 +69,21 @@ public class InstrumentationController {
                         if (type.isEnum() && (method.getName().equals("values") || method.getName().equals("valueOf"))) continue;
 
                         String locationKey = method.toString();
+                        int methodFirstLine = firstLineOf(loader, locationKey);
 
                         TypeDescription.Generic retType = method.getReturnType();
                         if (retType.represents(int.class) || retType.represents(short.class) || retType.represents(byte.class) || retType.represents(char.class)) {
                             int id = org.probe.ProbeCatalog.idForLocation(locationKey);
                             org.probe.ProbeCatalog.describe(id, "Modified Integer return value in " + locationKey);
+                            org.probe.ProbeCatalog.setLine(id, methodFirstLine);
                         } else if (retType.represents(boolean.class)) {
                             int id = org.probe.ProbeCatalog.idForLocation(locationKey);
                             org.probe.ProbeCatalog.describe(id, "Modified boolean return value in " + locationKey);
+                            org.probe.ProbeCatalog.setLine(id, methodFirstLine);
                         } else if (!retType.represents(void.class)) {
                             int id = org.probe.ProbeCatalog.idForLocation(locationKey);
                             org.probe.ProbeCatalog.describe(id, "Modified Object return value in " + locationKey);
+                            org.probe.ProbeCatalog.setLine(id, methodFirstLine);
                         }
 
                         int argCount = method.getParameters().size();
@@ -84,7 +93,6 @@ public class InstrumentationController {
 
                             TypeDescription.Generic pType = method.getParameters().get(i).getType();
                             String typeName = "Object";
-
                             if (pType.represents(int.class) || pType.represents(short.class) || pType.represents(byte.class) || pType.represents(char.class)) {
                                 typeName = "Integer";
                             } else if (pType.represents(boolean.class)) {
@@ -92,6 +100,7 @@ public class InstrumentationController {
                             }
 
                             org.probe.ProbeCatalog.describe(id, "Modified " + typeName + " argument " + (i + 1) + " in " + locationKey);
+                            org.probe.ProbeCatalog.setLine(id, methodFirstLine);
                         }
                     }
 
@@ -113,5 +122,38 @@ public class InstrumentationController {
             return false;
         }
         return loc.contains("/target/classes") || loc.contains("\\target\\classes");
+    }
+
+    private static int firstLineOf(ClassLoader loader, String methodSignature) {
+        if (loader == null) return -1;
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("([\\w\\.\\$]+)\\.[\\w\\$<>]+\\(")
+                    .matcher(methodSignature);
+            if (!m.find()) return -1;
+            String resourcePath = m.group(1).replace('.', '/') + ".class";
+
+            try (var stream = loader.getResourceAsStream(resourcePath)) {
+                if (stream == null) return -1;
+                int[] result = {-1};
+                new ClassReader(stream).accept(new ClassVisitor(Opcodes.ASM9) {
+                    @Override
+                    public MethodVisitor visitMethod(int access, String name, String descriptor,
+                                                     String signature, String[] exceptions) {
+                        return new MethodVisitor(Opcodes.ASM9) {
+                            @Override
+                            public void visitLineNumber(int line, net.bytebuddy.jar.asm.Label start) {
+                                if (result[0] == -1 && methodSignature.contains(name + "(")) {
+                                    result[0] = line;
+                                }
+                            }
+                        };
+                    }
+                }, ClassReader.SKIP_FRAMES);
+                return result[0];
+            }
+        } catch (Exception e) {
+            return -1;
+        }
     }
 }
