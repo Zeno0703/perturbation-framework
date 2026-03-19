@@ -42,3 +42,4 @@ build/
 .lens/
 
 scripts/database.json
+scripts/analysis_results/database.json

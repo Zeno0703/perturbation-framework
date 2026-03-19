@@ -6,11 +6,7 @@ import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import org.probe.PerturbationGate;
 import org.probe.ProbeCatalog;
 
-import static net.bytebuddy.matcher.ElementMatchers.isMethod;
-import static net.bytebuddy.matcher.ElementMatchers.not;
-import static net.bytebuddy.matcher.ElementMatchers.isConstructor;
-import static net.bytebuddy.matcher.ElementMatchers.isAbstract;
-import static net.bytebuddy.matcher.ElementMatchers.isNative;
+import static net.bytebuddy.matcher.ElementMatchers.*;
 
 public class ArgumentPerturbationStrategy implements PerturbationStrategy {
 
@@ -18,8 +14,7 @@ public class ArgumentPerturbationStrategy implements PerturbationStrategy {
     public DynamicType.Builder<?> apply(DynamicType.Builder<?> builder) {
         return builder.visit(
                 Advice.to(ArgumentAdvice.class).on(
-                        isMethod()
-                                .and(not(isConstructor()))
+                        (isMethod().or(isConstructor()))
                                 .and(not(isAbstract()))
                                 .and(not(isNative()))
                 )
@@ -27,18 +22,23 @@ public class ArgumentPerturbationStrategy implements PerturbationStrategy {
     }
 
     public static Object[] perturbArguments(Object[] args, String locationKey) {
-        Object[] modifiedArgs = new Object[args.length];
-        System.arraycopy(args, 0, modifiedArgs, 0, args.length);
-        boolean writeBack = false;
+        if (args == null || args.length == 0) return args;
 
-        for (int i = 0; i < modifiedArgs.length; i++) {
-            Object currentArg = modifiedArgs[i];
+        Object[] modifiedArgs = null;
+
+        for (int i = 0; i < args.length; i++) {
+            Object currentArg = args[i];
             if (currentArg == null) continue;
 
             String argKey = locationKey + ":arg:" + i;
             int probeId = ProbeCatalog.idForLocation(argKey);
 
             if (probeId != -1) {
+                if (modifiedArgs == null) {
+                    modifiedArgs = new Object[args.length];
+                    System.arraycopy(args, 0, modifiedArgs, 0, args.length);
+                }
+
                 if (currentArg instanceof Integer num) {
                     modifiedArgs[i] = PerturbationGate.apply(num.intValue(), probeId);
                 } else if (currentArg instanceof Boolean bool) {
@@ -46,11 +46,10 @@ public class ArgumentPerturbationStrategy implements PerturbationStrategy {
                 } else {
                     modifiedArgs[i] = PerturbationGate.apply(currentArg, probeId);
                 }
-                writeBack = true;
             }
         }
 
-        return writeBack ? modifiedArgs : args;
+        return modifiedArgs != null ? modifiedArgs : args;
     }
 
     public static class ArgumentAdvice {

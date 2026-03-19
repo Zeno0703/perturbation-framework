@@ -109,7 +109,6 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
 
         @Override
         public void visitEnd() {
-            // Filter based on LVT presence
             boolean lvtPresent = !lvtEntries.isEmpty();
 
             for (PendingProbe p : pendingProbes) {
@@ -125,16 +124,10 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
             super.visitEnd();
         }
 
-        private static class PendingProbe {
-            final int id, slot;
-            final String fallbackType;
-            final boolean isIinc;
-            PendingProbe(int id, int slot, String type, boolean iinc) { this.id = id; this.slot = slot; this.fallbackType = type; this.isIinc = iinc; }
+        private record PendingProbe(int id, int slot, String fallbackType, boolean isIinc) {
         }
 
-        private static class LvtData {
-            final String name, type;
-            LvtData(String name, String type) { this.name = name; this.type = type; }
+        private record LvtData(String name, String type) {
         }
     }
 }
