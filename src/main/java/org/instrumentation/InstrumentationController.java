@@ -7,18 +7,11 @@ import org.probe.PerturbationGate;
 import org.probe.ProbeCatalog;
 
 import java.lang.instrument.Instrumentation;
-import java.util.List;
 import java.util.Map;
 
 public class InstrumentationController {
 
     public static void install(Instrumentation inst) {
-        List<PerturbationStrategy> strategies = List.of(
-                new ArgumentPerturbationStrategy(),
-                new ReturnPerturbationStrategy(),
-                new VariablePerturbationStrategy()
-        );
-
         new AgentBuilder.Default()
                 .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
                 .with(AgentBuilder.Listener.StreamWriting.toSystemError().withErrorsOnly())
@@ -31,9 +24,11 @@ public class InstrumentationController {
                     registerProbesForType(type, loader);
 
                     DynamicType.Builder<?> modifiedBuilder = builderInstance;
-                    for (PerturbationStrategy strategy : strategies) {
-                        modifiedBuilder = strategy.apply(modifiedBuilder);
-                    }
+
+                    modifiedBuilder = new ArgumentPerturbationStrategy().apply(modifiedBuilder);
+                    modifiedBuilder = new ReturnPerturbationStrategy().apply(modifiedBuilder);
+                    modifiedBuilder = new VariablePerturbationStrategy().apply(modifiedBuilder);
+
                     return modifiedBuilder;
                 })
                 .installOn(inst);

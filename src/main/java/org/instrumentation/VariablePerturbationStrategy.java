@@ -5,23 +5,22 @@ import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.implementation.Implementation;
-import net.bytebuddy.jar.asm.ClassReader;
-import net.bytebuddy.jar.asm.ClassVisitor;
 import net.bytebuddy.jar.asm.Label;
 import net.bytebuddy.jar.asm.MethodVisitor;
 import net.bytebuddy.jar.asm.Opcodes;
 import net.bytebuddy.pool.TypePool;
 import org.probe.ProbeCatalog;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static net.bytebuddy.matcher.ElementMatchers.any;
 
 public class VariablePerturbationStrategy implements PerturbationStrategy {
 
-    private static final Map<String, Map<String, Set<Integer>>> BOOLEAN_SLOT_CACHE = new HashMap<>();
+    public VariablePerturbationStrategy() {}
 
     @Override
     public DynamicType.Builder<?> apply(DynamicType.Builder<?> builder) {
@@ -30,37 +29,6 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
                         .method(any(), new VariableAssignmentPerturber())
                         .writerFlags(net.bytebuddy.jar.asm.ClassWriter.COMPUTE_FRAMES)
         );
-    }
-
-    static Map<String, Set<Integer>> scanBooleanSlots(ClassLoader loader, String classResourcePath) {
-        if (BOOLEAN_SLOT_CACHE.containsKey(classResourcePath)) {
-            return BOOLEAN_SLOT_CACHE.get(classResourcePath);
-        }
-
-        Map<String, Set<Integer>> result = new HashMap<>();
-        if (loader == null) loader = ClassLoader.getSystemClassLoader();
-
-        try (InputStream is = loader.getResourceAsStream(classResourcePath)) {
-            if (is == null) return result;
-            ClassReader cr = new ClassReader(is);
-            cr.accept(new ClassVisitor(Opcodes.ASM9) {
-                @Override
-                public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
-                    String key = name + descriptor;
-                    return new MethodVisitor(Opcodes.ASM9) {
-                        @Override
-                        public void visitLocalVariable(String varName, String varDesc, String sig, Label start, Label end, int index) {
-                            if (varDesc.equals("Z")) {
-                                result.computeIfAbsent(key, k -> new HashSet<>()).add(index);
-                            }
-                        }
-                    };
-                }
-            }, ClassReader.SKIP_FRAMES);
-        } catch (IOException ignored) {}
-
-        BOOLEAN_SLOT_CACHE.put(classResourcePath, result);
-        return result;
     }
 
     public static class VariableAssignmentPerturber implements AsmVisitorWrapper.ForDeclaredMethods.MethodVisitorWrapper {
@@ -77,29 +45,19 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
                 return methodVisitor;
             }
 
-            String classResourcePath = instrumentedType.getName().replace('.', '/') + ".class";
-            ClassLoader loader = Thread.currentThread().getContextClassLoader();
-            Map<String, Set<Integer>> allBooleanSlots = scanBooleanSlots(loader, classResourcePath);
-
-            String asmMethodKey = (instrumentedMethod.isConstructor() ? "<init>" : instrumentedMethod.getInternalName())
-                    + instrumentedMethod.getDescriptor();
-            Set<Integer> booleanSlots = allBooleanSlots.getOrDefault(asmMethodKey, Collections.emptySet());
-
-            return new VariablePerturbationVisitor(Opcodes.ASM9, methodVisitor, instrumentedMethod.toString(), booleanSlots);
+            return new VariablePerturbationVisitor(Opcodes.ASM9, methodVisitor, instrumentedMethod.toString());
         }
     }
 
     public static class VariablePerturbationVisitor extends MethodVisitor {
         private final String methodName;
-        private final Set<Integer> booleanSlots;
         private final List<PendingProbe> pendingProbes = new ArrayList<>();
         private final Map<Integer, LvtData> lvtEntries = new HashMap<>();
         private int currentLine = -1;
 
-        public VariablePerturbationVisitor(int api, MethodVisitor methodVisitor, String methodName, Set<Integer> booleanSlots) {
+        public VariablePerturbationVisitor(int api, MethodVisitor methodVisitor, String methodName) {
             super(api, methodVisitor);
             this.methodName = methodName;
-            this.booleanSlots = booleanSlots;
         }
 
         @Override
@@ -111,21 +69,14 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
         @Override
         public void visitVarInsn(int opcode, int varIndex) {
             if (opcode == Opcodes.ISTORE) {
-                boolean isBoolean = booleanSlots.contains(varIndex);
-
                 int probeId = ProbeCatalog.idForLocation(methodName + ":var:" + varIndex);
                 ProbeCatalog.setLine(probeId, currentLine);
-                if (isBoolean) {
-                    pendingProbes.add(new PendingProbe(probeId, varIndex, "boolean", false));
 
-                    super.visitLdcInsn(probeId);
-                    super.visitMethodInsn(Opcodes.INVOKESTATIC, "org/probe/PerturbationGate", "apply", "(ZI)Z", false);
-                } else {
-                    pendingProbes.add(new PendingProbe(probeId, varIndex, "Integer", false));
+                pendingProbes.add(new PendingProbe(probeId, varIndex, "Integer/Boolean", false));
 
-                    super.visitLdcInsn(probeId);
-                    super.visitMethodInsn(Opcodes.INVOKESTATIC, "org/probe/PerturbationGate", "apply", "(II)I", false);
-                }
+                super.visitLdcInsn(probeId);
+                super.visitMethodInsn(Opcodes.INVOKESTATIC, "org/probe/PerturbationGate", "apply", "(II)I", false);
+
             } else if (opcode == Opcodes.ASTORE) {
                 int probeId = ProbeCatalog.idForLocation(methodName + ":objVar:" + varIndex);
                 ProbeCatalog.setLine(probeId, currentLine);
@@ -188,7 +139,6 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
         }
 
         private record PendingProbe(int id, int slot, String fallbackType, boolean isIinc) {}
-
         private record LvtData(String name, String type) {}
     }
 }
