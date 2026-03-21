@@ -71,7 +71,7 @@ def build_file_cache(project_dir, test_stats, dashboard_ledger, dashboard_method
         test_class = test_name.split('#')[0]
         needed_files.add((test_class, True))
         for p in stats['probes']:
-            _, fqcn, _ = parse_probe(p['desc'])
+            _, fqcn, _, _, _ = parse_probe(p['desc'])
             if fqcn != "unknown":
                 needed_files.add((fqcn, False))
 

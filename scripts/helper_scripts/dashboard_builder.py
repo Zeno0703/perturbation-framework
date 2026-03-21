@@ -286,7 +286,7 @@ def build_ledger_html(master_probes, project_dir):
 
 def _build_probe_json_record(p, global_tier3_probes, project_dir):
     """Serialise one probe into a compact JSON-safe dict for the data-probes attribute."""
-    mod, fqcn, m_name = parse_probe(p['desc'])
+    mod, fqcn, m_name, _, _ = parse_probe(p['desc'])
 
     if p['tier'] == 3:
         bucket = 't3'
@@ -544,7 +544,9 @@ def build_code_rows(dashboard_methods, master_probes, project_dir):
             test_items = ""
             n_clean = n_dirty = n_survived = 0
             if mp_data:
-                for t_name, outcome in mp_data['test_outcomes'].items():
+                for t_name, t_data in mp_data['test_outcomes'].items():
+                    outcome = t_data['outcome']
+                    exception = t_data['exception']
                     if outcome == 'clean':
                         color = 'var(--success-text)';
                         bg = 'var(--success-bg)';
@@ -553,7 +555,7 @@ def build_code_rows(dashboard_methods, master_probes, project_dir):
                     elif outcome == 'dirty':
                         color = 'var(--warning-text)';
                         bg = 'var(--warning-bg)';
-                        label = 'Exception'
+                        label = f'Exception: {exception}' if exception else 'Exception'
                         n_dirty += 1
                     elif outcome == 'timeout':
                         color = 'var(--warning-text)';

@@ -62,7 +62,14 @@ public class InstrumentationController {
             int methodFirstLine = lineInfo.firstLine != -1 ? lineInfo.firstLine : 0;
 
             int exactSignatureLine = methodFirstLine;
-            String lookupKey = type.getName() + "." + asmName + "." + argCount;
+
+            StringBuilder paramSig = new StringBuilder();
+            for (int i = 0; i < argCount; i++) {
+                if (i > 0) paramSig.append(",");
+                paramSig.append(method.getParameters().get(i).getType().asErasure().getSimpleName());
+            }
+
+            String lookupKey = type.getName() + "." + asmName + "." + paramSig.toString();
 
             if (signatureLines.containsKey(lookupKey)) {
                 exactSignatureLine = Integer.parseInt(signatureLines.getProperty(lookupKey));

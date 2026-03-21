@@ -1,0 +1,32 @@
+[
+  {
+    "name": "JSemVer",
+    "dir": "/Users/zenovandenbulcke/Documents/jsemver",
+    "package": "com.github.zafarkhaja.semver"
+  },
+  {
+    "name": "Joda-Money",
+    "dir": "/Users/zenovandenbulcke/Documents/joda-money",
+    "package": "org.joda.money"
+  },
+  {
+    "name": "Commons-CLI",
+    "dir": "/Users/zenovandenbulcke/Documents/commons-cli",
+    "package": "org.apache.commons.cli"
+  },
+  {
+    "name": "Commons-CSV",
+    "dir": "/Users/zenovandenbulcke/Documents/commons-csv",
+    "package": "org.apache.commons.csv"
+  },
+  {
+    "name": "Commons-Validator",
+    "dir": "/Users/zenovandenbulcke/Documents/commons-validator",
+    "package": "org.apache.commons.validator"
+  },
+  {
+    "name": "Textr",
+    "dir": "/Users/zenovandenbulcke/Documents/Textr",
+    "package": "org.group02"
+  }
+]

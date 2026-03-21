@@ -16,35 +16,64 @@ except ModuleNotFoundError:
 # Probe description helpers
 # ---------------------------------------------------------------------------
 
+_GENERIC_RE = re.compile(r'<.*?>')
+
 def parse_probe(desc):
     """
-    Robustly extract (modification_type, fqcn, method_name) from a probe description.
-    Handles standard methods and constructors seamlessly.
+    Extract all structured fields from a probe description string.
+
+    Returns
+    -------
+    (modifier, fqcn, method_name, location, operator)  — all str.
+
+    modifier   : the raw modification label, e.g. "boolean return value"
+    fqcn       : fully-qualified class name, or "unknown"
+    method_name: simple method name, or "unknown"
+    location   : "Return" | "Argument" | "Variable" | "Unknown"
+    operator   : short label combining location and type, e.g. "Ret-Boolean"
     """
     parts = desc.rsplit(" in ", 1)
     if len(parts) != 2:
-        return "unknown", "unknown", "unknown"
+        return "unknown", "unknown", "unknown", "Unknown", "Unknown"
 
     mod = parts[0].replace("Modified ", "").strip()
     sig = parts[1].strip()
 
+    # Derive location and operator from the modifier string
+    mod_lower = mod.lower()
+    if "return" in mod_lower:
+        location, loc_abbr = "Return", "Ret"
+    elif "argument" in mod_lower:
+        location, loc_abbr = "Argument", "Arg"
+    elif "variable" in mod_lower:
+        location, loc_abbr = "Variable", "Var"
+    else:
+        location, loc_abbr = "Unknown", "Unk"
+
+    if "boolean" in mod_lower:
+        type_abbr = "Boolean"
+    elif "integer" in mod_lower or "int " in mod_lower:
+        type_abbr = "Integer"
+    else:
+        type_abbr = "Object"
+
+    operator = f"{loc_abbr}-{type_abbr}"
+
     prefix = sig.split('(')[0].strip()
     tokens = prefix.split()
     if not tokens:
-        return mod, "unknown", "unknown"
+        return mod, "unknown", "unknown", location, operator
 
     fq_path = tokens[-1]
     segments = fq_path.split('.')
     if len(segments) < 2:
-        return mod, fq_path, "unknown"
+        return mod, fq_path, "unknown", location, operator
 
-    is_constructor = False
-    if len(tokens) == 1:
-        is_constructor = True
-    elif tokens[-2] in ('public', 'protected', 'private'):
-        is_constructor = True
-    elif segments[-1] and segments[-1][0].isupper():
-        is_constructor = True
+    is_constructor = (
+        len(tokens) == 1
+        or tokens[-2] in ('public', 'protected', 'private')
+        or (segments[-1] and segments[-1][0].isupper())
+    )
 
     if is_constructor:
         fqcn = fq_path
@@ -53,11 +82,10 @@ def parse_probe(desc):
         fqcn = '.'.join(segments[:-1])
         method_name = segments[-1]
 
-    import re
-    fqcn = re.sub(r'<.*?>', '', fqcn)
-    method_name = re.sub(r'<.*?>', '', method_name)
+    fqcn = _GENERIC_RE.sub('', fqcn)
+    method_name = _GENERIC_RE.sub('', method_name)
 
-    return mod, fqcn, method_name
+    return mod, fqcn, method_name, location, operator
 
 def get_warning(mod, method_name):
     """
@@ -109,9 +137,9 @@ def discovery(project_dir, agent_jar, target_package, log_file):
     try:
         generate_signature_map(project_dir)
     except Exception as e:
-        print(f"  -> Pre-flight mapping failed (falling back to bytecode lines): {e}")
+        print(f"Pre-flight mapping failed (falling back to bytecode lines): {e}")
 
-    code, stderr, _ = run_maven(-1, project_dir, agent_jar, target_package)
+    code, stderr, _ = run_maven(-1, project_dir, agent_jar, target_package, maven_goal="test")
     discovery_duration = time.time() - start_time
     log_file.write(f"Discovery finished in {discovery_duration:.2f} seconds.\n")
 
@@ -170,7 +198,7 @@ def evaluate(probe_id, tests, project_dir, agent_jar, target_package,
     """
     code, stderr, timed_out = run_maven(
         probe_id, project_dir, agent_jar, target_package,
-        timeout_limit, targeted_tests=tests,
+        timeout_limit, targeted_tests=tests, maven_goal="surefire:test"
     )
 
     if timed_out:
@@ -227,11 +255,11 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
     master_probes = {}
     for pid, probe_data in sorted(probes.items()):
         probe_desc = probe_data['desc']
-        mod, fqcn, m_name = parse_probe(probe_desc)
+        mod, fqcn, m_name, _, _ = parse_probe(probe_desc)
         master_probes[pid] = {
             'id': pid, 'desc': probe_desc, 'fqcn': fqcn, 'method': m_name,
             'status': 'Un-hit', 'test_outcomes': {},
-            'line': probe_data.get('line', -1)  # Integrated line number
+            'line': probe_data.get('line', -1)
         }
 
     dashboard_tests = defaultdict(lambda: {'probes': []})
@@ -274,7 +302,7 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
 
         if is_timeout:
             for t in sorted_tests:
-                mp['test_outcomes'][t] = 'timeout'
+                mp['test_outcomes'][t] = {'outcome': 'timeout', 'exception': 'TimeoutException'}
             mp['status'] = 'TIMEOUT'
 
             method_key = f"{fqcn}#{m_name}"
@@ -298,34 +326,32 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
 
                 if "FAIL" in s_up:
                     if "ASSERT" in s_up or "COMPARISON" in s_up or "MULTIPLEFAILURES" in s_up:
-                        # Clean kill — assertion-level failure
-                        mp['test_outcomes'][t_name] = 'clean'
+                        mp['test_outcomes'][t_name] = {'outcome': 'clean', 'exception': None}
                         has_clean = True
                         if pid not in global_tier3_probes:
                             global_tier3_probes[pid] = t_name
                         dashboard_tests[t_name]['probes'].append({
                             'id': pid, 'desc': probe_desc, 'status': status,
-                            'tier': 3, 'actions': t_actions, 'line': probe_line  # Integrated line number
+                            'tier': 3, 'actions': t_actions, 'line': probe_line
                         })
                     else:
-                        # Dirty kill — exception-level failure
-                        mp['test_outcomes'][t_name] = 'dirty'
-                        has_dirty = True
                         clean_exc = (
                             status.replace("FAIL (", "").rstrip(")")
                             if status.startswith("FAIL (") else status
                         )
+                        mp['test_outcomes'][t_name] = {'outcome': 'dirty', 'exception': clean_exc}
+                        has_dirty = True
                         probe_exceptions.add(clean_exc)
                         dashboard_tests[t_name]['probes'].append({
                             'id': pid, 'desc': probe_desc, 'status': status,
-                            'tier': 2, 'actions': t_actions, 'line': probe_line  # Integrated line number
+                            'tier': 2, 'actions': t_actions, 'line': probe_line
                         })
                 elif "PASS" in s_up:
-                    mp['test_outcomes'][t_name] = 'survived'
+                    mp['test_outcomes'][t_name] = {'outcome': 'survived', 'exception': None}
                     has_survived = True
                     dashboard_tests[t_name]['probes'].append({
                         'id': pid, 'desc': probe_desc, 'status': status,
-                        'tier': 1, 'actions': t_actions, 'line': probe_line  # Integrated line number
+                        'tier': 1, 'actions': t_actions, 'line': probe_line
                     })
 
             # Determine overall probe status
@@ -367,23 +393,22 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                 'line': mp.get('line', -1)  # Integrated line number
             })
 
-        # ── Absolute probe metrics ─────────────────────────────────────────────
-        total_discovered = len(master_probes)
-        total_unhit = sum(1 for mp in master_probes.values() if mp['status'] == 'Un-hit')
-        total_executed = total_discovered - total_unhit
-        clean_kills_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Clean Kill')
-
-        dirty_kills_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Dirty Kill')
-        timeouts_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Timeout')
-
-        survivals_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Survived')
+    # ── Absolute probe metrics ─────────────────────────────────────────────
+    total_discovered = len(master_probes)
+    total_unhit = sum(1 for mp in master_probes.values() if mp['status'] == 'Un-hit')
+    total_executed = total_discovered - total_unhit
+    clean_kills_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Clean Kill')
+    dirty_kills_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Dirty Kill')
+    timeouts_count = sum(1 for mp in master_probes.values() if mp['status'] == 'TIMEOUT')
+    survivals_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Survived')
 
     # ── Per-test summary for Test-Centric tab ─────────────────────────────
     test_summary = {}
     for pid, mp in master_probes.items():
-        for t_name, outcome in mp['test_outcomes'].items():
+        for t_name, t_data in mp['test_outcomes'].items():
             if t_name not in test_summary:
                 test_summary[t_name] = {'clean': 0, 'dirty': 0, 'survived': 0}
+            outcome = t_data['outcome']
             key = outcome if outcome in ('clean', 'dirty', 'survived') else 'dirty'
             test_summary[t_name][key] += 1
     for t_name, s in test_summary.items():
