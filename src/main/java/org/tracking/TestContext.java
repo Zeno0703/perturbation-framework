@@ -1,16 +1,13 @@
 package org.tracking;
 
-import org.utils.StringUtils;
-
 public class TestContext {
 
     private static final ThreadLocal<String> current = new InheritableThreadLocal<>();
     private static volatile String globalFallback = null;
 
     public static void enter(String id) {
-        String sanitized = StringUtils.sanitize(id);
-        current.set(sanitized);
-        globalFallback = sanitized;
+        current.set(id);
+        globalFallback = id;
     }
 
     public static String getCurrent() {

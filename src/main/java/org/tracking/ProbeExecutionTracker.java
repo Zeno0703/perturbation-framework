@@ -10,6 +10,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
+import static org.utils.JsonUtils.jsonString;
+
 public class ProbeExecutionTracker {
 
     private static final Map<String, Set<Integer>> hits = new ConcurrentHashMap<>();
@@ -20,7 +22,11 @@ public class ProbeExecutionTracker {
     }
 
     public static void recordAction(String testId, Object original, Object perturbed) {
-        actions.add(testId + "\t" + original + " -> " + perturbed);
+        String line = "{\"test\":" + jsonString(testId)
+                + ",\"original\":" + jsonString(String.valueOf(original))
+                + ",\"perturbed\":" + jsonString(String.valueOf(perturbed))
+                + "}";
+        actions.add(line);
     }
 
     public static void clear() {
@@ -33,7 +39,11 @@ public class ProbeExecutionTracker {
         for (Map.Entry<String, Set<Integer>> e : hits.entrySet()) {
             String testId = e.getKey();
             for (Integer probeId : e.getValue()) {
-                sb.append(probeId).append("\t").append(testId).append("\n");
+                sb.append("{\"probe_id\":")
+                        .append(probeId)
+                        .append(",\"test\":")
+                        .append(jsonString(testId))
+                        .append("}\n");
             }
         }
         FileUtils.writeAtomic(file, sb.toString());
@@ -41,8 +51,8 @@ public class ProbeExecutionTracker {
 
     public static void dumpActionsTo(Path file) throws IOException {
         StringBuilder sb = new StringBuilder();
-        for (String action : actions) {
-            sb.append(action).append("\n");
+        for (String line : actions) {
+            sb.append(line).append("\n");
         }
         FileUtils.writeAtomic(file, sb.toString());
     }

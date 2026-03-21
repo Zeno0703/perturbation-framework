@@ -1,79 +1,101 @@
+import json
 import os
 from collections import defaultdict
 
 OUT_DIR = "target/perturb"
 
 
-def unescape(text):
-    """Reverse the Java-side tab-safe escaping applied to artifact values."""
-    return (
-        text
-        .replace("\\\\", "\\")
-        .replace("\\n", "\n")
-        .replace("\\r", "\r")
-        .replace("\\t", "\t")
-    )
-
-
-def read_artifact(project_dir, filename):
+def _read_jsonl(project_dir: str, filename: str) -> list[dict]:
     """
-    Parse a two-column, tab-separated artifact file.
+    Parse a JSONL artifact file.
 
-    Returns a list of [key, value] pairs, unescaping both columns.
+    Returns a list of parsed objects (one per non-empty line).
     Returns an empty list when the file does not exist.
+    Skips and silently ignores any line that is not valid JSON — this makes
+    the reader resilient to a truncated final line caused by an abrupt JVM
+    shutdown.
     """
     path = os.path.join(project_dir, OUT_DIR, filename)
+    results = []
     try:
         with open(path, encoding="utf-8") as f:
-            result = []
-            for line in f:
-                if "\t" not in line:
+            for lineno, raw in enumerate(f, 1):
+                line = raw.strip()
+                if not line:
                     continue
-                parts = line.rstrip("\r\n").split("\t", 2)
-                if len(parts) >= 2:
-                    result.append([unescape(p) for p in parts])
-            return result
+                try:
+                    results.append(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    print(f"[artifact_reader] {filename}:{lineno}: skipping malformed line: {exc}")
     except FileNotFoundError:
-        return []
+        pass
+    return results
 
 
-def read_probes(project_dir):
+def read_probes(project_dir: str) -> dict[int, dict]:
     """
-    Return a dict mapping probe_id (int) -> description (str).
+    Return a dict mapping probe_id (int) -> {"desc": str, "line": int}.
+
+    probes.txt schema: {"id": int, "description": str, "line": int}
     """
     result = {}
-    for row in read_artifact(project_dir, "probes.txt"):
-        pid = int(row[0])
-        desc = row[1]
-        line = int(row[2]) if len(row) > 2 and row[2].lstrip('-').isdigit() else -1
-        result[pid] = {'desc': desc, 'line': line}
+    for obj in _read_jsonl(project_dir, "probes.txt"):
+        try:
+            pid = int(obj["id"])
+            result[pid] = {
+                "desc": obj.get("description", f"probe {pid}"),
+                "line": int(obj.get("line", -1)),
+            }
+        except (KeyError, TypeError, ValueError):
+            pass
     return result
 
 
-def read_hits(project_dir):
+def read_hits(project_dir: str) -> defaultdict[int, set[str]]:
     """
     Return a defaultdict(set) mapping probe_id (int) -> set of test names
     that exercised that probe during the discovery run.
-    """
 
-    hits = defaultdict(set)
-    for pid, test in read_artifact(project_dir, "hits.txt"):
-        hits[int(pid)].add(test)
+    hits.txt schema: {"probe_id": int, "test": str}
+    """
+    hits: defaultdict[int, set[str]] = defaultdict(set)
+    for obj in _read_jsonl(project_dir, "hits.txt"):
+        try:
+            hits[int(obj["probe_id"])].add(obj["test"])
+        except (KeyError, TypeError, ValueError):
+            pass
     return hits
 
 
-def read_test_outcomes(project_dir):
+def read_test_outcomes(project_dir: str) -> dict[str, str]:
     """
-    Return a dict mapping test_name -> status string.
+    Return a dict mapping test_name -> status string (e.g. "PASS" or
+    "FAIL (AssertionError)").
+
+    test-outcomes.txt schema: {"test": str, "status": str}
     """
-    return {k: v.strip() for k, v in read_artifact(project_dir, "test-outcomes.txt")}
+    result = {}
+    for obj in _read_jsonl(project_dir, "test-outcomes.txt"):
+        try:
+            result[obj["test"]] = obj["status"].strip()
+        except (KeyError, AttributeError):
+            pass
+    return result
 
 
-def read_perturbations(project_dir):
+def read_perturbations(project_dir: str) -> defaultdict[str, list[str]]:
     """
     Return a defaultdict(list) mapping test_name -> list of action strings.
+    Each action string has the form "original -> perturbed", reconstructed
+    from the structured fields so callers see the same shape as before.
+
+    perturbations.txt schema: {"test": str, "original": str, "perturbed": str}
     """
-    actions_map = defaultdict(list)
-    for test_id, action in read_artifact(project_dir, "perturbations.txt"):
-        actions_map[test_id].append(action)
+    actions_map: defaultdict[str, list[str]] = defaultdict(list)
+    for obj in _read_jsonl(project_dir, "perturbations.txt"):
+        try:
+            action = f"{obj['original']} -> {obj['perturbed']}"
+            actions_map[obj["test"]].append(action)
+        except KeyError:
+            pass
     return actions_map

@@ -8,6 +8,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static org.utils.JsonUtils.jsonString;
+
 public class ProbeCatalog {
 
     private static final Map<String, Integer> locations = new ConcurrentHashMap<>();
@@ -41,7 +43,7 @@ public class ProbeCatalog {
     }
 
     public static void describe(int probeId, String description) {
-        descriptions.put(probeId, org.utils.StringUtils.sanitize(description));
+        descriptions.put(probeId, description);
     }
 
     public static String descriptionFor(int probeId) {
@@ -59,7 +61,13 @@ public class ProbeCatalog {
     public static void dumpTo(Path file) throws IOException {
         StringBuilder sb = new StringBuilder();
         for (int id : allProbeIds()) {
-            sb.append(id).append("\t").append(descriptionFor(id)).append("\t").append(lineFor(id)).append("\n");
+            sb.append("{\"id\":")
+                    .append(id)
+                    .append(",\"description\":")
+                    .append(jsonString(descriptionFor(id)))
+                    .append(",\"line\":")
+                    .append(lineFor(id))
+                    .append("}\n");
         }
         FileUtils.writeAtomic(file, sb.toString());
     }
