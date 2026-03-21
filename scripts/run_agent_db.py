@@ -12,6 +12,7 @@ from helper_scripts.artifact_reader import (
     read_test_outcomes,
     read_perturbations,
 )
+from helper_scripts.signature_mapper import generate_signature_map
 
 # ==============================================================================
 # CONFIGURATION
@@ -183,6 +184,12 @@ def process_project(project, agent_jar):
     # ── Phase 1: Discovery ─────────────────────────────────────────────────
     print(f"\n[{p_name}] Starting Discovery Phase...")
     disc_start = time.time()
+
+    try:
+        generate_signature_map(p_dir)
+    except Exception as e:
+        print(f"  -> Pre-flight mapping failed (falling back to bytecode lines): {e}")
+
     code, stderr, timed_out = run_maven(-1, p_dir, agent_jar, p_pkg)
     discovery_duration = time.time() - disc_start
 

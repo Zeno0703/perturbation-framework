@@ -51,6 +51,8 @@ def run_maven(probe_id, project_dir, agent_jar, target_package,
         f'-DargLine={arg_line}',
         "-Djunit.jupiter.extensions.autodetection.enabled=true",
         "-Djacoco.skip=true",
+        "-Drat.skip=true",
+        "-Dcheckstyle.skip=true",
     ]
 
     if targeted_tests:
@@ -59,11 +61,11 @@ def run_maven(probe_id, project_dir, agent_jar, target_package,
     try:
         process = subprocess.Popen(
             command, cwd=project_dir,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             start_new_session=True,
         )
-        _, stderr = process.communicate(timeout=timeout_limit)
-        return process.returncode, stderr, False
+        output, _ = process.communicate(timeout=timeout_limit)
+        return process.returncode, output, False
 
     except subprocess.TimeoutExpired:
         os.killpg(os.getpgid(process.pid), signal.SIGTERM)

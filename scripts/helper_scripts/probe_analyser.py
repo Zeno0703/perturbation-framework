@@ -6,10 +6,11 @@ from collections import defaultdict
 try:
     from maven_runner import run_maven
     from artifact_reader import (read_probes, read_hits, read_test_outcomes, read_perturbations, )
+    from signature_mapper import generate_signature_map
 except ModuleNotFoundError:
     from .maven_runner import run_maven
     from .artifact_reader import (read_probes, read_hits, read_test_outcomes, read_perturbations,)
-
+    from .signature_mapper import generate_signature_map
 
 # ---------------------------------------------------------------------------
 # Probe description helpers
@@ -104,6 +105,11 @@ def discovery(project_dir, agent_jar, target_package, log_file):
     print("Running Discovery Phase...")
     log_file.write("Running Discovery Phase...\n")
     start_time = time.time()
+
+    try:
+        generate_signature_map(project_dir)
+    except Exception as e:
+        print(f"  -> Pre-flight mapping failed (falling back to bytecode lines): {e}")
 
     code, stderr, _ = run_maven(-1, project_dir, agent_jar, target_package)
     discovery_duration = time.time() - start_time

@@ -6,10 +6,22 @@ import net.bytebuddy.dynamic.DynamicType;
 import org.probe.PerturbationGate;
 import org.probe.ProbeCatalog;
 
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.lang.instrument.Instrumentation;
 import java.util.Map;
+import java.util.Properties;
 
 public class InstrumentationController {
+
+    private static final Properties signatureLines = new Properties();
+
+    static {
+        String outDir = System.getProperty("perturb.outDir", "target/perturb");
+        try (InputStream is = new FileInputStream(outDir + "/method_lines.properties")) {
+            signatureLines.load(is);
+        } catch (Exception ignored) {}
+    }
 
     public static void install(Instrumentation inst) {
         new AgentBuilder.Default()
@@ -36,7 +48,6 @@ public class InstrumentationController {
 
     private static void registerProbesForType(TypeDescription type, ClassLoader loader) {
         String classResourcePath = type.getName().replace('.', '/') + ".class";
-
         Map<String, AsmMethodAnalyser.MethodLineInfo> classLineInfo = AsmMethodAnalyser.analyseClass(loader, classResourcePath);
 
         for (var method : type.getDeclaredMethods()) {
@@ -45,9 +56,17 @@ public class InstrumentationController {
             String locationKey = method.toString();
             String asmName = method.isConstructor() ? "<init>" : method.getInternalName();
             String asmDesc = method.getDescriptor();
+            int argCount = method.getParameters().size();
 
             AsmMethodAnalyser.MethodLineInfo lineInfo = classLineInfo.getOrDefault(asmName + asmDesc, new AsmMethodAnalyser.MethodLineInfo());
             int methodFirstLine = lineInfo.firstLine != -1 ? lineInfo.firstLine : 0;
+
+            int exactSignatureLine = methodFirstLine;
+            String lookupKey = type.getName() + "." + asmName + "." + argCount;
+
+            if (signatureLines.containsKey(lookupKey)) {
+                exactSignatureLine = Integer.parseInt(signatureLines.getProperty(lookupKey));
+            }
 
             TypeDescription.Generic retType = method.getReturnType();
             if (!retType.represents(void.class) && isSupportedType(retType)) {
@@ -61,12 +80,11 @@ public class InstrumentationController {
                 }
             }
 
-            int argCount = method.getParameters().size();
             for (int i = 0; i < argCount; i++) {
                 TypeDescription.Generic pType = method.getParameters().get(i).getType();
                 if (isSupportedType(pType)) {
                     String typeName = resolveTypeName(pType);
-                    register(locationKey + ":arg:" + i, "Modified " + typeName + " argument " + (i + 1) + " in " + locationKey, methodFirstLine);
+                    register(locationKey + ":arg:" + i, "Modified " + typeName + " argument " + (i + 1) + " in " + locationKey, exactSignatureLine);
                 }
             }
         }
