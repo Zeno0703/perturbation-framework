@@ -32,9 +32,10 @@ env/
 # ========================
 # Prevents database and result leakage
 research/data/database.json
+research/data/mutations*.xml
+research/analysis_results/database.json
 research/analysis_results/*.pdf
 research/analysis_results/*.png
-scripts/analysis_results/
 
 # ========================
 # IDEs & Editors

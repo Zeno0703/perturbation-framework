@@ -36,6 +36,7 @@ def append_to_database(project_name, master_probes, hit_counts, db_path):
             "project":          project_name,
             "probe_id":         pid,
             "probe_desc":       desc,
+            "asmDescriptor":    mp.get('asmDescriptor', ''),
             "line":             mp.get('line', -1),
             "operator":         operator,
             "location":         location,

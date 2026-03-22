@@ -21,7 +21,7 @@
 clear; clc; close all;
 
 % ── Configuration ─────────────────────────────────────────────────────────
-DB_PATH   = 'database.json';
+DB_PATH   = '../data/database.json';
 
 % ── Full test suite sizes per project ─────────────────────────────────────
 % Set the total number of tests in each project's test suite.
@@ -36,7 +36,7 @@ FULL_SUITE_SIZES = containers.Map( ...
 % Set to 0 for projects where you don't know the suite size — they will be
 % estimated as max(unique_tests_hit) across all probes for that project.
 SAVE_FIGS = true;
-BASE_DIR = fileparts(DB_PATH);
+BASE_DIR = '../';
 if isempty(BASE_DIR), BASE_DIR = '.'; end
 
 OUT_DIR = fullfile(BASE_DIR, 'analysis_results');
@@ -48,10 +48,11 @@ C_CLEAN   = [0.45 0.75 0.45];   % soft green  — Clean Kill
 C_DIRTY   = [0.95 0.80 0.25];   % soft yellow — Dirty Kill
 C_SURVIVE = [0.85 0.35 0.35];   % soft red    — Survived
 C_UNHIT   = [0.72 0.72 0.72];   % grey        — Un-hit
+C_TIMEOUT = [0.55 0.35 0.65];   % purple      — Timed Out
 
-OUTCOME_COLORS = [C_CLEAN; C_DIRTY; C_SURVIVE; C_UNHIT];
-OUTCOME_LABELS = {'Clean Kill','Dirty Kill','Survived','Un-hit'};
-OUTCOME_ORDER  = {'Clean Kill','Dirty Kill','Survived','Un-hit'};
+OUTCOME_COLORS = [C_CLEAN; C_DIRTY; C_SURVIVE; C_UNHIT; C_TIMEOUT];
+OUTCOME_LABELS = {'Clean Kill','Dirty Kill','Survived','Un-hit','Timed Out'};
+OUTCOME_ORDER  = {'Clean Kill','Dirty Kill','Survived','Un-hit','Timed Out'};
 
 set(0,'DefaultAxesFontName','Helvetica','DefaultAxesFontSize',11);
 set(0,'DefaultTextFontName','Helvetica');
@@ -67,7 +68,17 @@ probes     = raw.probes;
 test_execs = raw.test_executions;
 
 probe_projects  = {probes.project};
-probe_outcomes  = {probes.probe_outcome};
+probe_outcomes_raw = {probes.probe_outcome};
+probe_timed_out    = [probes.timed_out];
+% Override outcome to 'Timed Out' where the timed_out flag is set,
+% regardless of what probe_outcome says (it would have been 'Dirty Kill').
+probe_outcomes = probe_outcomes_raw;
+for ii = 1:numel(probe_outcomes)
+    if probe_timed_out(ii)
+        probe_outcomes{ii} = 'Timed Out';
+    end
+end
+clear probe_outcomes_raw ii;
 probe_operators = {probes.operator};
 probe_hits        = [probes.total_hits];
 probe_unique_hits = [probes.unique_tests_hit];
@@ -94,10 +105,11 @@ end
 % nGroups×4 percentage matrix + absolute counts + row totals
 function [pct, abs_c, totals] = outcome_matrix(group_var, outcomes, group_list, order)
     nG    = numel(group_list);
-    abs_c = zeros(nG, 4);
+    nK    = numel(order);
+    abs_c = zeros(nG, nK);
     for i = 1:nG
         mask = strcmp(group_var, group_list{i});
-        for k = 1:4
+        for k = 1:nK
             abs_c(i,k) = sum(strcmp(outcomes(mask), order{k}));
         end
     end
@@ -108,8 +120,9 @@ end
 % Draw 100% stacked bar with n= labels and inside % labels
 function draw_stacked(ax, pct, totals, x_labels, colors, leg_labels, min_pct)
     nG = size(pct,1);
+    nK = size(colors,1);
     b  = bar(ax, pct, 'stacked', 'BarWidth', 0.6);
-    for k = 1:4
+    for k = 1:nK
         b(k).FaceColor = colors(k,:);
         b(k).EdgeColor = 'none';
     end
@@ -127,7 +140,7 @@ function draw_stacked(ax, pct, totals, x_labels, colors, leg_labels, min_pct)
              'HorizontalAlignment','center','FontSize',8.5, ...
              'Color',[0.25 0.25 0.25],'FontWeight','bold');
     end
-    for k = 1:4
+    for k = 1:nK
         for i = 1:nG
             if pct(i,k) >= min_pct
                 base = sum(pct(i,1:k-1));
@@ -156,7 +169,7 @@ labs_f1 = [projects, {'All Projects'}];
 fig1 = figure('Position',[100 100 FIG_W FIG_H], 'Color','w');
 ax1  = axes(fig1);
 draw_stacked(ax1, pct_f1, tot_f1, labs_f1, OUTCOME_COLORS, OUTCOME_LABELS, 5);
-xline(ax1, nP+0.5, '--', 'Color',[0.6 0.6 0.6], 'LineWidth',1.2, 'Alpha',0.6);
+xline(ax1, nP+0.5, '--', 'Color',[0.6 0.6 0.6], 'LineWidth',1.2, 'Alpha',0.6, 'HandleVisibility','off');
 ax1.Title.String     = 'Probe Outcome Distribution — Per Project & Overall';
 ax1.Title.FontWeight = 'bold';
 
@@ -167,7 +180,7 @@ if SAVE_FIGS, save_fig(fig1, OUT_DIR, 'fig1_outcome_per_project'); end
 % =========================================================================
 fprintf('Fig 2: Probe outcome by operator aggregated ...\n');
 
-exec_mask = ~strcmp(probe_outcomes,'Un-hit');
+exec_mask = ~strcmp(probe_outcomes,'Un-hit') & ~strcmp(probe_outcomes,'Timed Out');
 all_ops   = sort(unique(probe_operators(exec_mask)));
 nOps      = numel(all_ops);
 
@@ -178,7 +191,7 @@ pct2 = pct2(si2,:);  tot2 = tot2(si2);  ops2 = all_ops(si2);
 
 fig2 = figure('Position',[100 100 max(FIG_W, nOps*130+220) FIG_H], 'Color','w');
 ax2  = axes(fig2);
-draw_stacked(ax2, pct2, tot2, ops2, OUTCOME_COLORS, OUTCOME_LABELS, 5);
+draw_stacked(ax2, pct2(:,1:3), tot2, ops2, OUTCOME_COLORS(1:3,:), OUTCOME_LABELS(1:3), 5);
 ax2.Title.String     = 'Probe Outcome by Operator Type — Aggregated (sorted by Clean Kill %)';
 ax2.Title.FontWeight = 'bold';
 
@@ -374,7 +387,7 @@ end
 % =========================================================================
 fprintf('Fig 6: Hit-count rank scatter per project ...\n');
 
-oc_colors = {C_CLEAN, C_DIRTY, C_SURVIVE, C_UNHIT};   % matches OUTCOME_ORDER
+oc_colors = {C_CLEAN, C_DIRTY, C_SURVIVE, C_UNHIT, C_TIMEOUT};   % matches OUTCOME_ORDER
 
 ncols6 = min(nP,3);
 nrows6 = ceil(nP/ncols6);
@@ -393,7 +406,7 @@ for i = 1:nP
     ax6 = subplot(nrows6, ncols6, i);
     hold(ax6,'on');
 
-    for k = 1:4
+    for k = 1:numel(OUTCOME_ORDER)
         sel = strcmp(out_sorted, OUTCOME_ORDER{k});
         if any(sel)
             scatter(ax6, ranks(sel), h_sorted(sel)+0.5, 14, ...
@@ -417,14 +430,14 @@ for i = 1:nP
 
     n_total = numel(h_sorted);
     n_exec  = sum(h_sorted > 0);
-    text(ax6, n_total*0.97, ax6.YLim(2)*0.75, ...
-         sprintf('n=%d total\n%d executed', n_total, n_exec), ...
-         'HorizontalAlignment','right','FontSize',8,'Color',[0.4 0.4 0.4]);
+    text(ax6, n_total*0.03, ax6.YLim(1)*1.8, ...
+         sprintf('n=%d  |  %d executed', n_total, n_exec), ...
+         'HorizontalAlignment','left','FontSize',7.5,'Color',[0.4 0.4 0.4]);
     hold(ax6,'off');
     last_ax6 = ax6;
 end
 
-legend(last_ax6, 'Location','northeast','Box','off','FontSize',9);
+legend(last_ax6, 'Location','southeast','Box','off','FontSize',9);
 sgtitle(fig6, 'Probe Hit-Count Rank — per Project  (steep drop = hotspot-dominated coverage)', ...
         'FontWeight','bold','FontSize',12);
 
@@ -453,7 +466,7 @@ fig7 = figure('Position',[100 100 FIG_W FIG_H+120], 'Color','w');
 ax7_top = subplot(4, 1, [1 2 3]);
 hold(ax7_top, 'on');
 
-for k = 1:4
+for k = 1:numel(OUTCOME_ORDER)
     sel = strcmp(out_all_s, OUTCOME_ORDER{k});
     if any(sel)
         scatter(ax7_top, ranks_all(sel), h_all_s(sel)+0.5, 20, ...
@@ -479,9 +492,9 @@ ax7_top.XTickLabel    = [];
 legend(ax7_top, 'Location', 'northeast', 'Box', 'off', 'FontSize', 10);
 
 n_exec_all = sum(h_all_s > 0);
-text(ax7_top, n_all*0.97, ax7_top.YLim(2)*0.75, ...
+text(ax7_top, n_all*0.03, ax7_top.YLim(2)*0.40, ...
      sprintf('n=%d probes\n%d executed', n_all, n_exec_all), ...
-     'HorizontalAlignment','right','FontSize',9,'Color',[0.4 0.4 0.4]);
+     'HorizontalAlignment','left','FontSize',9,'Color',[0.4 0.4 0.4]);
 hold(ax7_top, 'off');
 
 
@@ -599,6 +612,9 @@ ax8.XTickLabelRotation = 20;
 ax8.YLabel.String      = 'Number of tests';
 ax8.Title.String       = 'Test Execution Efficiency — Full Suite vs Tests Actually Run per Probe';
 ax8.Title.FontWeight   = 'bold';
+ax8.TitleFontSizeMultiplier = 1.0;
+ax8.Position(4) = ax8.Position(4) - 0.04;   % shrink axes height slightly to give title room
+ax8.Position(2) = ax8.Position(2) + 0.04;   % shift axes up to compensate
 ax8.Box                = 'off';
 ax8.YGrid              = 'on';
 ax8.GridAlpha          = 0.15;

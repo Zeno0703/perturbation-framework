@@ -85,10 +85,10 @@ public class InstrumentationController {
             if (!retType.represents(void.class) && isSupportedType(retType)) {
                 String typeName = resolveTypeName(retType);
                 if (lineInfo.returnLines.isEmpty()) {
-                    register(locationKey + ":return", "Modified " + typeName + " return value in " + locationKey, methodFirstLine);
+                    register(locationKey + ":return", "Modified " + typeName + " return value in " + locationKey, methodFirstLine, asmDesc);
                 } else {
                     for (int retLine : lineInfo.returnLines) {
-                        register(locationKey + ":return:" + retLine, "Modified " + typeName + " return on line " + retLine + " in " + locationKey, retLine);
+                        register(locationKey + ":return:" + retLine, "Modified " + typeName + " return on line " + retLine + " in " + locationKey, retLine, asmDesc);
                     }
                 }
             }
@@ -97,7 +97,7 @@ public class InstrumentationController {
                 TypeDescription.Generic pType = method.getParameters().get(i).getType();
                 if (isSupportedType(pType)) {
                     String typeName = resolveTypeName(pType);
-                    register(locationKey + ":arg:" + i, "Modified " + typeName + " argument " + (i + 1) + " in " + locationKey, exactSignatureLine);
+                    register(locationKey + ":arg:" + i, "Modified " + typeName + " argument " + (i + 1) + " in " + locationKey, exactSignatureLine, asmDesc);
                 }
             }
         }
@@ -107,9 +107,10 @@ public class InstrumentationController {
         return !type.represents(long.class) && !type.represents(float.class) && !type.represents(double.class);
     }
 
-    private static void register(String key, String description, int line) {
+    private static void register(String key, String description, int line, String asmDescriptor) {
         int id = ProbeCatalog.idForLocation(key);
         ProbeCatalog.describe(id, description);
+        ProbeCatalog.setDescriptor(id, asmDescriptor);
         ProbeCatalog.setLine(id, line);
     }
 

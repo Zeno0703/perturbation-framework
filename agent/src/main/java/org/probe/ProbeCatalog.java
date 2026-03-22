@@ -14,6 +14,7 @@ public class ProbeCatalog {
 
     private static final Map<String, Integer> locations = new ConcurrentHashMap<>();
     private static final Map<Integer, String> descriptions = new ConcurrentHashMap<>();
+    private static final Map<Integer, String> descriptors = new ConcurrentHashMap<>();
     private static final Map<Integer, Integer> lineNumbers = new ConcurrentHashMap<>();
     private static final Set<Integer> probes = ConcurrentHashMap.newKeySet();
     private static volatile boolean frozen = false;
@@ -50,6 +51,14 @@ public class ProbeCatalog {
         return descriptions.getOrDefault(probeId, "probe " + probeId);
     }
 
+    public static void setDescriptor(int probeId, String descriptor) {
+        if (descriptor != null) descriptors.put(probeId, descriptor);
+    }
+
+    public static String descriptorFor(int probeId) {
+        return descriptors.getOrDefault(probeId, "");
+    }
+
     public static void setLine(int probeId, int line) {
         if (line > 0) lineNumbers.put(probeId, line);
     }
@@ -58,6 +67,7 @@ public class ProbeCatalog {
         return lineNumbers.getOrDefault(probeId, -1);
     }
 
+    // Update your dumpTo method to look like this:
     public static void dumpTo(Path file) throws IOException {
         StringBuilder sb = new StringBuilder();
         for (int id : allProbeIds()) {
@@ -67,6 +77,8 @@ public class ProbeCatalog {
                     .append(jsonString(descriptionFor(id)))
                     .append(",\"line\":")
                     .append(lineFor(id))
+                    .append(",\"asmDescriptor\":")
+                    .append(jsonString(descriptorFor(id)))
                     .append("}\n");
         }
         FileUtils.writeAtomic(file, sb.toString());

@@ -45,19 +45,23 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
                 return methodVisitor;
             }
 
-            return new VariablePerturbationVisitor(Opcodes.ASM9, methodVisitor, instrumentedMethod.toString());
+            String asmDesc = instrumentedMethod.getDescriptor();
+
+            return new VariablePerturbationVisitor(Opcodes.ASM9, methodVisitor, instrumentedMethod.toString(), asmDesc);
         }
     }
 
     public static class VariablePerturbationVisitor extends MethodVisitor {
         private final String methodName;
+        private final String asmDesc;
         private final List<PendingProbe> pendingProbes = new ArrayList<>();
         private final Map<Integer, LvtData> lvtEntries = new HashMap<>();
         private int currentLine = -1;
 
-        public VariablePerturbationVisitor(int api, MethodVisitor methodVisitor, String methodName) {
+        public VariablePerturbationVisitor(int api, MethodVisitor methodVisitor, String methodName, String asmDesc) {
             super(api, methodVisitor);
             this.methodName = methodName;
+            this.asmDesc = asmDesc;
         }
 
         @Override
@@ -71,6 +75,7 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
             if (opcode == Opcodes.ISTORE) {
                 int probeId = ProbeCatalog.idForLocation(methodName + ":var:" + varIndex);
                 ProbeCatalog.setLine(probeId, currentLine);
+                ProbeCatalog.setDescriptor(probeId, asmDesc);
 
                 pendingProbes.add(new PendingProbe(probeId, varIndex, "Integer/Boolean", false));
 
@@ -80,6 +85,7 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
             } else if (opcode == Opcodes.ASTORE) {
                 int probeId = ProbeCatalog.idForLocation(methodName + ":objVar:" + varIndex);
                 ProbeCatalog.setLine(probeId, currentLine);
+                ProbeCatalog.setDescriptor(probeId, asmDesc);
                 pendingProbes.add(new PendingProbe(probeId, varIndex, "Object", false));
 
                 super.visitInsn(Opcodes.DUP);
@@ -98,6 +104,7 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
         public void visitIincInsn(int varIndex, int increment) {
             int probeId = ProbeCatalog.idForLocation(methodName + ":var:" + varIndex);
             ProbeCatalog.setLine(probeId, currentLine);
+            ProbeCatalog.setDescriptor(probeId, asmDesc);
             pendingProbes.add(new PendingProbe(probeId, varIndex, "Integer", true));
 
             super.visitVarInsn(Opcodes.ILOAD, varIndex);

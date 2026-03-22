@@ -14,12 +14,11 @@
 clear; clc; close all;
 
 % ── Configuration ─────────────────────────────────────────────────────────
-DB_PATH   = 'database.json';
+% Resolve paths relative to this script's location,
+% identical to the approach used in analyse_perturbations.m.
+DB_PATH   = '../data/database.json';
 SAVE_FIGS = true;
-BASE_DIR = fileparts(DB_PATH);
-if isempty(BASE_DIR), BASE_DIR = '.'; end
-
-OUT_DIR = fullfile(BASE_DIR, 'analysis_results');
+OUT_DIR   = '../analysis_results';
 if SAVE_FIGS && ~exist(OUT_DIR, 'dir')
     mkdir(OUT_DIR);
 end
@@ -29,10 +28,11 @@ C_CLEAN   = [0.45 0.75 0.45];
 C_DIRTY   = [0.95 0.80 0.25];
 C_SURVIVE = [0.85 0.35 0.35];
 C_UNHIT   = [0.72 0.72 0.72];
+C_TIMEOUT = [0.55 0.35 0.65];   % purple — Timed Out
 
-OUTCOME_COLORS = [C_CLEAN; C_DIRTY; C_SURVIVE; C_UNHIT];
-OUTCOME_LABELS = {'Clean Kill','Dirty Kill','Survived','Un-hit'};
-OUTCOME_ORDER  = {'Clean Kill','Dirty Kill','Survived','Un-hit'};
+OUTCOME_COLORS = [C_CLEAN; C_DIRTY; C_SURVIVE; C_UNHIT; C_TIMEOUT];
+OUTCOME_LABELS = {'Clean Kill','Dirty Kill','Survived','Un-hit','Timed Out'};
+OUTCOME_ORDER  = {'Clean Kill','Dirty Kill','Survived','Un-hit','Timed Out'};
 
 set(0,'DefaultAxesFontName','Helvetica','DefaultAxesFontSize',11);
 set(0,'DefaultTextFontName','Helvetica');
@@ -48,7 +48,15 @@ probes     = raw.probes;
 test_execs = raw.test_executions;
 
 probe_projects    = {probes.project};
-probe_outcomes    = {probes.probe_outcome};
+probe_outcomes_raw = {probes.probe_outcome};
+probe_timed_out    = [probes.timed_out];
+probe_outcomes = probe_outcomes_raw;
+for ii = 1:numel(probe_outcomes)
+    if probe_timed_out(ii)
+        probe_outcomes{ii} = 'Timed Out';
+    end
+end
+clear probe_outcomes_raw ii;
 probe_hits        = [probes.total_hits];
 probe_unique_hits = [probes.unique_tests_hit];
 
@@ -75,8 +83,9 @@ end
 
 function draw_stacked(ax, pct, totals, x_labels, colors, leg_labels, min_pct)
     nG = size(pct,1);
+    nK = size(colors,1);
     b  = bar(ax, pct, 'stacked', 'BarWidth', 0.6);
-    for k = 1:4
+    for k = 1:nK
         b(k).FaceColor = colors(k,:);
         b(k).EdgeColor = 'none';
     end
@@ -94,7 +103,7 @@ function draw_stacked(ax, pct, totals, x_labels, colors, leg_labels, min_pct)
              'HorizontalAlignment','center','FontSize',8.5, ...
              'Color',[0.25 0.25 0.25],'FontWeight','bold');
     end
-    for k = 1:4
+    for k = 1:nK
         for i = 1:nG
             if pct(i,k) >= min_pct
                 base = sum(pct(i,1:k-1));
@@ -134,7 +143,7 @@ nrows_A = ceil(nP/ncols_A);
 figA    = figure('Position',[100 100 ncols_A*400 nrows_A*360], 'Color','w');
 
 for i = 1:nP
-    mask = strcmp(probe_projects, projects{i}) & ~strcmp(probe_outcomes,'Un-hit');
+    mask = strcmp(probe_projects, projects{i}) & ~strcmp(probe_outcomes,'Un-hit') & ~strcmp(probe_outcomes,'Timed Out');
     h    = probe_hits(mask);
     out  = probe_outcomes(mask);
 
@@ -499,7 +508,7 @@ fprintf('Fig D: Outcome by coverage depth ...\n');
 bins_D       = {1, [2 5], [6 15], 16};
 bin_labels_D = {'Exactly 1 test','2–5 tests','6–15 tests','16+ tests'};
 nBins_D      = numel(bins_D);
-exec_mask_D  = ~strcmp(probe_outcomes,'Un-hit');
+exec_mask_D  = ~strcmp(probe_outcomes,'Un-hit') & ~strcmp(probe_outcomes,'Timed Out');
 
 % Helper: which bin does a unique_hits value fall in?
 function b = get_bin(u, bins)
@@ -517,7 +526,7 @@ function b = get_bin(u, bins)
 end
 
 % Aggregated outcome matrix
-pct_D  = zeros(nBins_D, 4);
+pct_D  = zeros(nBins_D, numel(OUTCOME_ORDER));
 tot_D  = zeros(nBins_D, 1);
 for b = 1:nBins_D
     bd = bins_D{b};
@@ -527,7 +536,7 @@ for b = 1:nBins_D
     end
     in_bin   = in_bin & exec_mask_D;
     tot_D(b) = sum(in_bin);
-    for k = 1:4
+    for k = 1:numel(OUTCOME_ORDER)
         pct_D(b,k) = sum(in_bin & strcmp(probe_outcomes,OUTCOME_ORDER{k})) / max(tot_D(b),1) * 100;
     end
 end
@@ -552,7 +561,7 @@ figD = figure('Position',[100 100 FIG_W FIG_H], 'Color','w');
 
 % Left: 100% stacked (aggregated)
 axDL = subplot(1,2,1);
-draw_stacked(axDL, pct_D, tot_D, bin_labels_D, OUTCOME_COLORS, OUTCOME_LABELS, 5);
+draw_stacked(axDL, pct_D(:,1:3), tot_D, bin_labels_D, OUTCOME_COLORS(1:3,:), OUTCOME_LABELS(1:3), 5);
 axDL.XLabel.String    = 'Number of distinct tests hitting probe';
 axDL.Title.String     = 'Outcome by Coverage Depth — All Projects';
 axDL.Title.FontWeight = 'bold';

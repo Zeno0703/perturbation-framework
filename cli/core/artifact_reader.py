@@ -34,9 +34,9 @@ def _read_jsonl(project_dir: str, filename: str) -> list[dict]:
 
 def read_probes(project_dir: str) -> dict[int, dict]:
     """
-    Return a dict mapping probe_id (int) -> {"desc": str, "line": int}.
+    Return a dict mapping probe_id (int) -> {"desc": str, "line": int, "asmDescriptor": str}.
 
-    probes.txt schema: {"id": int, "description": str, "line": int}
+    probes.txt schema: {"id": int, "description": str, "line": int, "asmDescriptor": str}
     """
     result = {}
     for obj in _read_jsonl(project_dir, "probes.txt"):
@@ -45,6 +45,7 @@ def read_probes(project_dir: str) -> dict[int, dict]:
             result[pid] = {
                 "desc": obj.get("description", f"probe {pid}"),
                 "line": int(obj.get("line", -1)),
+                "asmDescriptor": obj.get("asmDescriptor", "")
             }
         except (KeyError, TypeError, ValueError):
             pass

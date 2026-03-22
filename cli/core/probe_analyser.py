@@ -259,7 +259,8 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
         master_probes[pid] = {
             'id': pid, 'desc': probe_desc, 'fqcn': fqcn, 'method': m_name,
             'status': 'Un-hit', 'test_outcomes': {},
-            'line': probe_data.get('line', -1)
+            'line': probe_data.get('line', -1),
+            'asmDescriptor': probe_data.get('asmDescriptor', '')
         }
 
     dashboard_tests = defaultdict(lambda: {'probes': []})
