@@ -41,7 +41,7 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
                                   int writerFlags,
                                   int readerFlags) {
 
-            if (instrumentedMethod.isSynthetic() || instrumentedMethod.isBridge() || instrumentedMethod.getName().contains("$")) {
+            if (!InstrumentationFilters.isTargetMethod(instrumentedMethod, instrumentedType)) {
                 return methodVisitor;
             }
 

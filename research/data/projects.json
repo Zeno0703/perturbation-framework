@@ -23,10 +23,5 @@
     "name": "Commons-Validator",
     "dir": "/Users/zenovandenbulcke/Documents/commons-validator",
     "package": "org.apache.commons.validator"
-  },
-  {
-    "name": "Textr",
-    "dir": "/Users/zenovandenbulcke/Documents/Textr",
-    "package": "org.group02"
   }
 ]
