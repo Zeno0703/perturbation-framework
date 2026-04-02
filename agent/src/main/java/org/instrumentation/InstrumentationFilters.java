@@ -10,10 +10,9 @@ import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 
 public class InstrumentationFilters {
 
-    public static ElementMatcher.Junction<net.bytebuddy.description.NamedElement> getIgnoreMatcher() {
+    static ElementMatcher.Junction<net.bytebuddy.description.NamedElement> getIgnoreMatcher() {
         return nameStartsWith("net.bytebuddy.")
                 .or(nameStartsWith("org.junit."))
-                .or(nameStartsWith("org.testing."))
                 .or(nameStartsWith("org.apache.maven."))
                 .or(nameStartsWith("java."))
                 .or(nameStartsWith("javax."))

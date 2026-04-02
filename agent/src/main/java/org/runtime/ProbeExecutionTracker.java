@@ -37,6 +37,7 @@ public class ProbeExecutionTracker {
         try {
             return String.valueOf(obj);
         } catch (Throwable t) {
+            // Fall back to identity-style output for objects with unsafe `toString` implementations.
             return obj.getClass().getName() + "@" + Integer.toHexString(System.identityHashCode(obj));
         }
     }

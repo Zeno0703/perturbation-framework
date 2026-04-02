@@ -14,17 +14,14 @@ import org.instrumentation.InstrumentationFilters;
 import org.registry.ProbeRegistrar;
 
 import java.util.Map;
+
 import static net.bytebuddy.matcher.ElementMatchers.any;
 
 public class ReturnPerturbationStrategy implements PerturbationStrategy {
 
     @Override
     public DynamicType.Builder<?> apply(DynamicType.Builder<?> builder, TypeDescription typeDesc, ClassLoader classLoader, Map<String, AsmMethodAnalyser.MethodLineInfo> lineInfoMap) {
-        return builder.visit(
-                new AsmVisitorWrapper.ForDeclaredMethods()
-                        .invokable(any(), new ReturnPerturberWrapper())
-                        .writerFlags(net.bytebuddy.jar.asm.ClassWriter.COMPUTE_FRAMES)
-        );
+    return builder.visit(new AsmVisitorWrapper.ForDeclaredMethods().invokable(any(), new ReturnPerturberWrapper()).writerFlags(net.bytebuddy.jar.asm.ClassWriter.COMPUTE_FRAMES));
     }
 
     public static class ReturnPerturberWrapper implements AsmVisitorWrapper.ForDeclaredMethods.MethodVisitorWrapper {

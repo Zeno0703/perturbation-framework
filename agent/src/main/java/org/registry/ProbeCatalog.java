@@ -33,6 +33,7 @@ public class ProbeCatalog {
             int id;
 
             while (true) {
+                // Rehash with a deterministic suffix until the generated id is unique.
                 String stringToHash = (attempt == 0) ? key : key + "_coll_" + attempt;
                 id = generateDeterministicId(stringToHash);
 

@@ -64,8 +64,10 @@ public class PerturbationGate {
         String test = TestContext.getCurrent();
         String testId = (test != null) ? test : "UNKNOWN_TEST";
 
+        // Track every hit for reporting, even when this probe is not currently active.
         ProbeExecutionTracker.record(testId, probeId);
 
+        // Returning null signals callers to skip perturbation and keep the original value.
         return (probeId == AgentConfig.PROBE_ID) ? testId : null;
     }
 

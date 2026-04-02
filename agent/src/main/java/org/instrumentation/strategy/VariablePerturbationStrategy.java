@@ -24,22 +24,12 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
 
     @Override
     public DynamicType.Builder<?> apply(DynamicType.Builder<?> builder, TypeDescription typeDesc, ClassLoader classLoader, Map<String, AsmMethodAnalyser.MethodLineInfo> lineInfoMap) {
-        return builder.visit(
-                new AsmVisitorWrapper.ForDeclaredMethods()
-                        .invokable(any(), new VariableAssignmentPerturber())
-                        .writerFlags(net.bytebuddy.jar.asm.ClassWriter.COMPUTE_FRAMES)
-        );
+        return builder.visit(new AsmVisitorWrapper.ForDeclaredMethods().invokable(any(), new VariableAssignmentPerturber()).writerFlags(net.bytebuddy.jar.asm.ClassWriter.COMPUTE_FRAMES));
     }
 
     public static class VariableAssignmentPerturber implements AsmVisitorWrapper.ForDeclaredMethods.MethodVisitorWrapper {
         @Override
-        public MethodVisitor wrap(TypeDescription instrumentedType,
-                                  MethodDescription instrumentedMethod,
-                                  MethodVisitor methodVisitor,
-                                  Implementation.Context implementationContext,
-                                  TypePool typePool,
-                                  int writerFlags,
-                                  int readerFlags) {
+        public MethodVisitor wrap(TypeDescription instrumentedType, MethodDescription instrumentedMethod, MethodVisitor methodVisitor, Implementation.Context implementationContext, TypePool typePool, int writerFlags, int readerFlags) {
 
             if (!InstrumentationFilters.isTargetMethod(instrumentedMethod, instrumentedType)) {
                 return methodVisitor;
@@ -86,6 +76,7 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
                 int probeId = ProbeRegistrar.registerVariable(methodName, varIndex, currentLine, asmDesc, "Object", true);
                 pendingProbes.add(new PendingProbe(probeId, varIndex));
 
+                // Keep reference semantics by swapping to null only when the gate marks this probe active.
                 super.visitInsn(Opcodes.DUP);
                 super.visitLdcInsn(probeId);
                 super.visitMethodInsn(Opcodes.INVOKESTATIC, PerturbationStrategy.GATE_CLASS, PerturbationStrategy.GATE_METHOD_CHECK, PerturbationStrategy.DESC_CHECK_OBJ, false);
@@ -125,10 +116,11 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
         @Override
         public void visitEnd() {
             if (!lvtEntries.isEmpty()) {
-                for (PendingProbe p : pendingProbes) {
-                    if (lvtEntries.containsKey(p.slot)) {
-                        LvtData data = lvtEntries.get(p.slot);
-                        ProbeRegistrar.updateVariableDescription(p.id, methodName, data.name, data.type);
+                // Resolve slot-based probe records to source variable names from the local variable table.
+                for (PendingProbe pendingProbe : pendingProbes) {
+                    if (lvtEntries.containsKey(pendingProbe.slot)) {
+                        LvtData data = lvtEntries.get(pendingProbe.slot);
+                        ProbeRegistrar.updateVariableDescription(pendingProbe.id, methodName, data.name, data.type);
                     }
                 }
             }

@@ -26,10 +26,8 @@ public class InstrumentationInstaller {
                 .with(AgentBuilder.Listener.StreamWriting.toSystemError().withErrorsOnly())
                 .assureReadEdgeTo(inst, PerturbationGate.class)
                 .ignore(InstrumentationFilters.getIgnoreMatcher())
-                .type((typeDesc, classLoader, module, classBeingRedefined, pd) ->
-                        InstrumentationFilters.isTargetType(typeDesc, pd))
+                .type((typeDesc, classLoader, module, classBeingRedefined, pd) -> InstrumentationFilters.isTargetType(typeDesc, pd))
                 .transform((builderInstance, type, loader, module, domain) -> {
-
                     String classResourcePath = type.getName().replace('.', '/') + ".class";
                     Map<String, AsmMethodAnalyser.MethodLineInfo> lineInfoMap = AsmMethodAnalyser.analyseClass(loader, classResourcePath);
 

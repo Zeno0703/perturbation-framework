@@ -39,6 +39,7 @@ public class AsmMethodAnalyser {
                         @Override
                         public void visitInsn(int opcode) {
                             if (opcode >= Opcodes.IRETURN && opcode <= Opcodes.RETURN && currentLine != -1) {
+                                // Keep all return lines so probes can be tied to exact source locations.
                                 info.returnLines.add(currentLine);
                             }
                         }

@@ -21,11 +21,7 @@ public class ArgumentPerturbationStrategy implements PerturbationStrategy {
 
     @Override
     public DynamicType.Builder<?> apply(DynamicType.Builder<?> builder, TypeDescription typeDesc, ClassLoader classLoader, Map<String, AsmMethodAnalyser.MethodLineInfo> lineInfoMap) {
-        return builder.visit(
-                new AsmVisitorWrapper.ForDeclaredMethods()
-                        .invokable(any(), new ArgumentPerturberWrapper(typeDesc, lineInfoMap))
-                        .writerFlags(net.bytebuddy.jar.asm.ClassWriter.COMPUTE_FRAMES)
-        );
+    return builder.visit(new AsmVisitorWrapper.ForDeclaredMethods().invokable(any(), new ArgumentPerturberWrapper(typeDesc, lineInfoMap)).writerFlags(net.bytebuddy.jar.asm.ClassWriter.COMPUTE_FRAMES));
     }
 
     public static class ArgumentPerturberWrapper implements AsmVisitorWrapper.ForDeclaredMethods.MethodVisitorWrapper {
@@ -69,6 +65,7 @@ public class ArgumentPerturbationStrategy implements PerturbationStrategy {
             AsmMethodAnalyser.MethodLineInfo info = lineInfoMap.getOrDefault(asmName + asmDesc, new AsmMethodAnalyser.MethodLineInfo());
             int exactLine = ProbeRegistrar.getSignatureLine(typeDesc, method, info.firstLine != -1 ? info.firstLine : 0);
 
+            // Local variable slots start at 1 for instance methods because slot 0 is `this`.
             int currentSlot = method.isStatic() ? 0 : 1;
 
             for (int i = 0; i < method.getParameters().size(); i++) {
@@ -83,6 +80,7 @@ public class ArgumentPerturbationStrategy implements PerturbationStrategy {
                         super.visitLdcInsn(probeId);
                         super.visitMethodInsn(Opcodes.INVOKESTATIC, PerturbationStrategy.GATE_CLASS, PerturbationStrategy.GATE_METHOD, PerturbationStrategy.DESC_INT, false);
 
+                        // ASM int perturbation is narrowed back to the original primitive width when needed.
                         if (pType.represents(short.class)) {
                             super.visitInsn(Opcodes.I2S);
                         } else if (pType.represents(byte.class)) {
@@ -99,7 +97,7 @@ public class ArgumentPerturbationStrategy implements PerturbationStrategy {
                         super.visitMethodInsn(Opcodes.INVOKESTATIC, PerturbationStrategy.GATE_CLASS, PerturbationStrategy.GATE_METHOD, PerturbationStrategy.DESC_BOOL, false);
                         super.visitVarInsn(Opcodes.ISTORE, currentSlot);
 
-                    } else { // Object
+                    } else {
                         super.visitVarInsn(Opcodes.ALOAD, currentSlot);
                         super.visitLdcInsn(probeId);
                         super.visitMethodInsn(Opcodes.INVOKESTATIC, PerturbationStrategy.GATE_CLASS, PerturbationStrategy.GATE_METHOD, PerturbationStrategy.DESC_OBJ, false);
