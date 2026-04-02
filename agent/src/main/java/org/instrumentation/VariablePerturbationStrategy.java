@@ -25,7 +25,7 @@ public class VariablePerturbationStrategy implements PerturbationStrategy {
     public DynamicType.Builder<?> apply(DynamicType.Builder<?> builder, TypeDescription typeDesc, ClassLoader classLoader, Map<String, AsmMethodAnalyser.MethodLineInfo> lineInfoMap) {
         return builder.visit(
                 new AsmVisitorWrapper.ForDeclaredMethods()
-                        .method(any(), new VariableAssignmentPerturber())
+                        .invokable(any(), new VariableAssignmentPerturber())
                         .writerFlags(net.bytebuddy.jar.asm.ClassWriter.COMPUTE_FRAMES)
         );
     }
