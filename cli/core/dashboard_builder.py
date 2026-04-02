@@ -3,19 +3,10 @@ import os
 import re
 import html as _html
 
-try:
-    from java_source import to_idea_link, build_file_cache
-    from probe_analyser import parse_probe, get_warning
-except ModuleNotFoundError:
-    from .java_source import to_idea_link, build_file_cache
-    from .probe_analyser import parse_probe, get_warning
-
-OUT_DIR = "target/perturb"
-
-
-# ---------------------------------------------------------------------------
-# HTML / JS escaping utilities
-# ---------------------------------------------------------------------------
+from .java_source import to_idea_link, build_file_cache
+from .artifact_reader import parse_probe
+from .probe_analyser import get_warning
+from .config import get_out_dir, FILE_DASHBOARD, FILE_CACHE_JS
 
 def escape_html(text):
     return _html.escape(str(text))
@@ -31,17 +22,12 @@ def sanitize_id(text):
     return re.sub(r'\W+', '_', text)
 
 
-# ---------------------------------------------------------------------------
-# Shared HTML fragment builders
-# ---------------------------------------------------------------------------
-
-def build_action_trace(p):
-    """Render the execution-trace block for a single probe entry."""
-    action_list = p.get('actions', [])
+def build_action_trace(probe):
+    action_list = probe.get('actions', [])
     if not action_list:
         action_list = ["State modification applied"]
 
-    exceptions = p.get('exceptions', [])
+    exceptions = probe.get('exceptions', [])
     exc_str = (
         f" <span class='trace-exception'>({escape_html(' | '.join(exceptions))})</span>"
         if exceptions else ""
@@ -57,19 +43,14 @@ def build_action_trace(p):
     disp += "</div>"
     return disp
 
+def build_ledger_row(probe, project_dir, probe_status=None):
+    class_name = probe['fqcn'].split('.')[-1] if probe['fqcn'] != 'unknown' else 'Unknown'
+    display_name = f"{probe['method']}()" if class_name == probe['method'] else f"{class_name}.{probe['method']}()"
 
-# ---------------------------------------------------------------------------
-# Probe-Centric (Ledger) tab builders
-# ---------------------------------------------------------------------------
-
-def build_ledger_row(p, project_dir, probe_status=None):
-    class_name = p['fqcn'].split('.')[-1] if p['fqcn'] != 'unknown' else 'Unknown'
-    display_name = f"{p['method']}()" if class_name == p['method'] else f"{class_name}.{p['method']}()"
-
-    hit_count = len(p['tests'])
+    hit_count = len(probe['tests'])
     ps = probe_status or (
-        'Survived' if p.get('tier') == 1 else
-        'Clean Kill' if p.get('tier') == 3 else 'Unknown'
+        'Survived' if probe.get('tier') == 1 else
+        'Clean Kill' if probe.get('tier') == 3 else 'Unknown'
     )
 
     if ps == 'Un-hit':
@@ -104,21 +85,21 @@ def build_ledger_row(p, project_dir, probe_status=None):
         row_style = ""
 
     witness_list = (
-        "".join([f"<li style='margin-bottom: 4px;'>{escape_html(t)}</li>" for t in p['tests']])
-        if p['tests'] else
+        "".join([f"<li style='margin-bottom: 4px;'>{escape_html(test_name)}</li>" for test_name in probe['tests']])
+        if probe['tests'] else
         "<li style='color:var(--text-muted); font-style:italic;'>No tests hit this probe.</li>"
     )
-    ide_link = to_idea_link(project_dir, p['fqcn'], False)
+    ide_link = to_idea_link(project_dir, probe['fqcn'], False)
 
     return f"""
-    <tr id='ledger-row-{p['id']}' class="clickable-row" style="{row_style}" onclick="toggleRow(event, 'ledger-desc-{p['id']}')">
-        <td><div class="scrollable-text font-medium code-font">#{p['id']}</div></td>
+    <tr id='ledger-row-{probe['id']}' class="clickable-row" style="{row_style}" onclick="toggleRow(event, 'ledger-desc-{probe['id']}')">
+        <td><div class="scrollable-text font-medium code-font">#{probe['id']}</div></td>
         <td><div class="scrollable-text code-font">{display_name}</div></td>
-        <td><div class="scrollable-text">{escape_html(p['desc'])}</div></td>
+        <td><div class="scrollable-text">{escape_html(probe['desc'])}</div></td>
         <td class="text-center"><div class="scrollable-text" style="text-align:center;">{hit_count} Test{'s' if hit_count != 1 else ''}</div></td>
-        <td class="text-right"><div class="scrollable-text" style="text-align:right;"><span id="ledger-badge-{p['id']}" class="badge {badge_class}" style="{badge_style}">{status_text}</span></div></td>
+        <td class="text-right"><div class="scrollable-text" style="text-align:right;"><span id="ledger-badge-{probe['id']}" class="badge {badge_class}" style="{badge_style}">{status_text}</span></div></td>
     </tr>
-    <tr id="ledger-desc-{p['id']}" class="details-row" style="display: none;">
+    <tr id="ledger-desc-{probe['id']}" class="details-row" style="display: none;">
         <td colspan="5" class="p-0">
             <div class="test-details">
                 <div style="display: flex; gap: 24px; margin-bottom: 0;">
@@ -131,10 +112,10 @@ def build_ledger_row(p, project_dir, probe_status=None):
                     <div style="flex: 1; display: flex; flex-direction: column; justify-content: flex-start; gap: 8px; border-left: 1px solid var(--border-color); padding-left: 24px; min-width: 200px;">
                         <h4 style="margin: 0 0 2px 0; font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.06em; font-weight: 700; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Actions</h4>
                         <a href="{ide_link}" class="btn-small" style="text-align: center; width: 100%;">Open in IDE</a>
-                        <button class="btn-small" style="width: 100%;" onclick="event.stopPropagation(); openCodeModal(null, null, '{escape_js(p['fqcn'])}', '{escape_js(p['method'])}', {p.get('line', -1)}, '{ps}')">View Source</button>
+                        <button class="btn-small" style="width: 100%;" onclick="event.stopPropagation(); openCodeModal(null, null, '{escape_js(probe['fqcn'])}', '{escape_js(probe['method'])}', {probe.get('line', -1)}, '{ps}')">View Source</button>
                         <div class='ledger-resolve-wrap'>
-                            <button class='btn-resolve' data-resolve-ledger="{p['id']}"
-                                onclick="event.stopPropagation(); markResolved('{p['id']}', 'ledger', this)">
+                            <button class='btn-resolve' data-resolve-ledger="{probe['id']}"
+                                onclick="event.stopPropagation(); markResolved('{probe['id']}', 'ledger', this)">
                                 Mark as Fixed
                             </button>
                             <div style='font-size:11px; color:var(--success-text); margin-top:6px;'>I have written a new test covering this probe.</div>
@@ -643,16 +624,11 @@ def build_code_rows(dashboard_methods, master_probes, project_dir):
 
 def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_stats,
                        test_summary, metrics, global_tier3_probes, master_probes):
-    """
-    Generate the full HTML dashboard and write it to disk.
-
-    Returns the path to the written HTML file.
-    """
-    out_folder = os.path.join(project_dir, OUT_DIR)
+    out_folder = get_out_dir(project_dir)
     os.makedirs(out_folder, exist_ok=True)
 
-    html_path = os.path.join(out_folder, "dashboard.html")
-    js_cache_path = os.path.join(out_folder, "source_cache.js")
+    html_path = os.path.join(out_folder, FILE_DASHBOARD)
+    js_cache_path = os.path.join(out_folder, FILE_CACHE_JS)
 
     all_probe_ids = sorted(master_probes.keys())
     probe_ids_json = json.dumps(all_probe_ids)

@@ -9,61 +9,54 @@ from collections import defaultdict
 from core.probe_analyser import discovery, run_analysis, format_analytics
 from core.dashboard_builder import generate_dashboard
 from core.db_exporter import append_to_database, get_recorded_probes
+from core.config import get_out_dir, DEFAULT_DB_PATH
+
 
 def export_stdout(metrics, analytics_text, project_dir, total_duration):
     print(analytics_text)
     print(f"Total wall-clock time : {total_duration:.2f}s")
-    print(f"Artifacts saved in    : {os.path.join(project_dir, 'target/perturb')}")
+    print(f"Artifacts saved in    : {get_out_dir(project_dir)}")
 
-def export_html(project_dir, dashboard_ledger, dashboard_methods, dashboard_tests,
-                test_summary, metrics, global_tier3_probes, master_probes, no_browser=False):
+
+def export_html(project_dir, dashboard_ledger, dashboard_methods, dashboard_tests, test_summary,
+                metrics, global_tier3_probes, master_probes, no_browser=False):
     html_file = generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, dashboard_tests,
                                    test_summary, metrics, global_tier3_probes, master_probes)
     print(f"Dashboard generated at: {html_file}")
-    if not no_browser: webbrowser.open('file://' + os.path.realpath(html_file))
+    if not no_browser:
+        webbrowser.open("file://" + os.path.realpath(html_file))
+
 
 def export_json(project_name, master_probes, hits, db_path):
     hit_counts = defaultdict(lambda: defaultdict(int))
-    for pid, tests_set in hits.items():
-        for t in tests_set:
-            hit_counts[pid][t] += 1
+    for probe_id, tests_set in hits.items():
+        for test_name in tests_set:
+            hit_counts[probe_id][test_name] += 1
     append_to_database(project_name, master_probes, hit_counts, db_path)
 
 
-# ==============================================================================
-# SINGLE-PROJECT PIPELINE
-# ==============================================================================
-
-def run_single_project(
-    project_dir, agent_jar, target_package,
-    formats, db_path, discovery_only, no_browser,
-    project_name=None, batch_size=100, redo=False
-):
-    target = os.path.join(project_dir, "target/perturb")
+def run_single_project(project_dir, agent_jar, target_package, formats, db_path, discovery_only,
+                       no_browser, project_name=None, batch_size=100, redo=False):
+    target = get_out_dir(project_dir)
     os.makedirs(target, exist_ok=True)
     log_path = os.path.join(target, "execution.log")
 
-    p_name = project_name or os.path.basename(os.path.abspath(project_dir))
+    resolved_project_name = project_name or os.path.basename(os.path.abspath(project_dir))
     script_start = time.time()
 
     with open(log_path, "w", encoding="utf-8") as log_file:
-
-        # ── Phase 1: Discovery ─────────────────────────────────────────────
-        probes, hits, discovery_duration = discovery(
-            project_dir, agent_jar, target_package, log_file,
-        )
+        probes, hits, discovery_duration = discovery(project_dir, agent_jar, target_package, log_file)
 
         if discovery_only:
             msg = (
-                f"\n[INFO] Discovery done — {len(probes)} probe(s) found.\n"
+                f"\n[INFO] Discovery done - {len(probes)} probe(s) found.\n"
                 f"Artifacts saved in: {target}\n"
             )
             print(msg)
             log_file.write(msg)
             return
 
-        # Filter against already recorded probes
-        recorded_probes = get_recorded_probes(db_path, p_name) if ('json' in formats and not redo) else set()
+        recorded_probes = get_recorded_probes(db_path, resolved_project_name) if ("json" in formats and not redo) else set()
         probes_to_run = {pid: d for pid, d in probes.items() if pid not in recorded_probes}
 
         if not probes_to_run:
@@ -81,12 +74,9 @@ def run_single_project(
         dynamic_timeout = max(discovery_duration * 2.0, 10.0)
         log_file.write(f"Timeout for evaluations set to: {dynamic_timeout:.2f}s\n")
 
-        # ── Phase 2: Evaluation ────────────────────────────────────────────
-
         def batch_callback(batch_probes):
-            """Callback pushed from analyser to incrementally save to the database."""
-            if 'json' in formats:
-                export_json(p_name, batch_probes, hits, db_path)
+            if "json" in formats:
+                export_json(resolved_project_name, batch_probes, hits, db_path)
 
         (
             master_probes,
@@ -96,12 +86,10 @@ def run_single_project(
             test_summary,
             metrics,
             global_tier3_probes,
-        ) = run_analysis(
-            probes_to_run, hits, project_dir, agent_jar, target_package,
-            dynamic_timeout, log_file, batch_callback=batch_callback, batch_size=batch_size
-        )
+        ) = run_analysis(probes_to_run, hits, project_dir, agent_jar, target_package,
+                         dynamic_timeout, log_file, batch_callback=batch_callback,
+                         batch_size=batch_size)
 
-        # ── Phase 3: Analytics (always written to log) ────────────────────
         analytics_text = format_analytics(metrics)
         log_file.write(analytics_text + "\n")
 
@@ -109,67 +97,47 @@ def run_single_project(
         log_file.write(f"Total wall-clock time: {total_duration:.2f}s\n")
         log_file.write(f"Execution log: {log_path}\n")
 
-        # ── Phase 4: Exports ───────────────────────────────────────────────
-        if 'stdout' in formats:
+        if "stdout" in formats:
             export_stdout(metrics, analytics_text, project_dir, total_duration)
 
-        if 'html' in formats:
-            export_html(
-                project_dir,
-                dashboard_ledger, dashboard_methods, dashboard_tests,
-                test_summary, metrics, global_tier3_probes, master_probes,
-                no_browser=no_browser,
-            )
+        if "html" in formats:
+            export_html(project_dir, dashboard_ledger, dashboard_methods, dashboard_tests,
+                        test_summary, metrics, global_tier3_probes, master_probes,
+                        no_browser=no_browser)
 
-        # JSON is not manually exported here at the end anymore because the callback handled it incrementally.
-
-
-# ==============================================================================
-# BATCH MODE
-# ==============================================================================
 
 def run_batch(batch_config_path, agent_jar, formats, db_path, no_browser, batch_size, redo):
-    with open(batch_config_path, encoding="utf-8") as f:
-        projects = json.load(f)
+    with open(batch_config_path, encoding="utf-8") as batch_file:
+        projects = json.load(batch_file)
 
     batch_start = time.time()
 
     for project in projects:
-        p_name = project.get("name", project["dir"])
-        p_dir  = project["dir"]
-        p_pkg  = project["package"]
+        project_name = project.get("name", project["dir"])
+        project_dir = project["dir"]
+        project_package = project["package"]
 
-        if not os.path.isdir(p_dir):
-            print(f"[{p_name}] Directory not found: {p_dir} — skipping.")
+        if not os.path.isdir(project_dir):
+            print(f"[{project_name}] Directory not found: {project_dir} - skipping.")
             continue
 
         print(f"\n{'=' * 60}")
-        print(f"  Project : {p_name}")
-        print(f"  Dir     : {p_dir}")
-        print(f"  Package : {p_pkg}")
+        print(f"  Project : {project_name}")
+        print(f"  Dir     : {project_dir}")
+        print(f"  Package : {project_package}")
         print(f"{'=' * 60}")
 
         try:
-            run_single_project(
-                p_dir, agent_jar, p_pkg,
-                formats, db_path,
-                discovery_only=False,
-                no_browser=no_browser,
-                project_name=p_name,
-                batch_size=batch_size,
-                redo=redo,
-            )
+            run_single_project(project_dir, agent_jar, project_package, formats, db_path,
+                               discovery_only=False, no_browser=no_browser,
+                               project_name=project_name, batch_size=batch_size, redo=redo)
         except SystemExit as exc:
-            print(f"[{p_name}] Pipeline exited early: {exc}. Continuing.")
+            print(f"[{project_name}] Pipeline exited early: {exc}. Continuing.")
         except Exception as exc:
-            print(f"[{p_name}] Unexpected error: {exc}. Continuing.")
+            print(f"[{project_name}] Unexpected error: {exc}. Continuing.")
 
     print(f"\nBatch complete in {time.time() - batch_start:.1f}s.")
 
-
-# ==============================================================================
-# CLI
-# ==============================================================================
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -183,6 +151,8 @@ def build_parser():
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+
+
 
     parser.add_argument("project_dir",    nargs="?", help="Maven project root (single-project mode).")
     parser.add_argument("agent_jar",                 help="Path to the perturbation-agent JAR.")
@@ -198,11 +168,9 @@ def build_parser():
         help="Export format (repeatable): stdout | html | json.  Default: stdout.",
     )
 
-    default_db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "research", "data", "database.json"))
-
     parser.add_argument(
-        "--output", default=default_db_path, metavar="DB_FILE",
-        help=f"JSON database path (default: {default_db_path}). Used with --format json.",
+        "--output", default=DEFAULT_DB_PATH, metavar="DB_FILE",
+        help=f"JSON database path (default: {DEFAULT_DB_PATH}). Used with --format json.",
     )
 
     parser.add_argument(
@@ -213,7 +181,6 @@ def build_parser():
         "--redo", action="store_true",
         help="Force re-evaluation of all probes (ignore already recorded probes).",
     )
-
     parser.add_argument(
         "--discovery-only", action="store_true",
         help="Run only the discovery phase and exit without evaluation.",
@@ -259,7 +226,7 @@ def main():
         args.discovery_only,
         args.no_browser,
         batch_size=args.batch_size,
-        redo=args.redo
+        redo=args.redo,
     )
 
 

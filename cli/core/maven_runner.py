@@ -1,30 +1,28 @@
 import os
 import subprocess
-import signal
 
-OUT_DIR = "target/perturb"
-ARTIFACTS = ("probes.txt", "hits.txt", "test-outcomes.txt", "perturbations.txt")
+from .config import get_out_dir, OUT_DIR_NAME, FILE_PROBES, FILE_HITS, FILE_OUTCOMES, FILE_PERTURBATIONS
+
+ARTIFACTS = (FILE_PROBES, FILE_HITS, FILE_OUTCOMES, FILE_PERTURBATIONS)
+
 
 def clear_artifacts(project_dir):
-    target = os.path.join(project_dir, OUT_DIR)
+    target = get_out_dir(project_dir)
     os.makedirs(target, exist_ok=True)
     for name in ARTIFACTS:
         path = os.path.join(target, name)
         if os.path.exists(path):
             os.remove(path)
 
+
 def run_maven(probe_id, project_dir, agent_jar, target_package,
               timeout_limit=None, targeted_tests=None, maven_goal="test"):
-    """
-    Execute Maven with the perturbation agent attached.
-    Added 'maven_goal' to allow bypassing the compile lifecycle.
-    """
     clear_artifacts(project_dir)
 
     arg_line = (
         f'-javaagent:"{agent_jar}" '
         f'-Dperturb.package={target_package} '
-        f'-Dperturb.outDir={OUT_DIR} '
+        f'-Dperturb.outDir={OUT_DIR_NAME} '
         f'-Dperturb.activeProbe={probe_id} '
         '-Dorg.agent.hidden.bytebuddy.experimental=true '
         '-Xshare:off '
@@ -46,13 +44,12 @@ def run_maven(probe_id, project_dir, agent_jar, target_package,
     try:
         process = subprocess.Popen(
             command, cwd=project_dir,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            start_new_session=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
         )
-        output, _ = process.communicate(timeout=timeout_limit)
-        return process.returncode, output, False
+        combined_output, _ = process.communicate(timeout=timeout_limit)
+        return process.returncode, combined_output, False
 
     except subprocess.TimeoutExpired:
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        process.kill()
         process.communicate()
         return -1, "PROCESS TIMED OUT", True

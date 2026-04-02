@@ -1,11 +1,14 @@
 import os
 import javalang
 
+from .config import get_out_dir, SRC_MAIN_JAVA, FILE_METHOD_LINES
+
+
 def generate_signature_map(project_dir):
-    src_dir = os.path.join(project_dir, "src", "main", "java")
-    out_dir = os.path.join(project_dir, "target", "perturb")
+    src_dir = os.path.join(project_dir, SRC_MAIN_JAVA)
+    out_dir = get_out_dir(project_dir)
     os.makedirs(out_dir, exist_ok=True)
-    output_file = os.path.join(out_dir, "method_lines.properties")
+    output_file = os.path.join(out_dir, FILE_METHOD_LINES)
 
     lines_written = 0
     failed_files = 0
@@ -13,13 +16,13 @@ def generate_signature_map(project_dir):
     if not os.path.exists(src_dir):
         return
 
-    with open(output_file, 'w', encoding='utf-8') as out_file:
-        for root, _, files in os.walk(src_dir):
-            for file in files:
-                if file.endswith(".java"):
-                    path = os.path.join(root, file)
-                    with open(path, 'r', encoding='utf-8') as f:
-                        source = f.read()
+    with open(output_file, "w", encoding="utf-8") as output_handle:
+        for root_dir, _, file_names in os.walk(src_dir):
+            for file_name in file_names:
+                if file_name.endswith(".java"):
+                    java_file_path = os.path.join(root_dir, file_name)
+                    with open(java_file_path, "r", encoding="utf-8") as source_file:
+                        source = source_file.read()
 
                     try:
                         tree = javalang.parse.parse(source)
@@ -33,9 +36,9 @@ def generate_signature_map(project_dir):
                                 continue
 
                             parent_fqcn = package_name
-                            for p in reversed(ast_path):
-                                if id(p) in node_to_fqcn:
-                                    parent_fqcn = node_to_fqcn[id(p)]
+                            for ast_node in reversed(ast_path):
+                                if id(ast_node) in node_to_fqcn:
+                                    parent_fqcn = node_to_fqcn[id(ast_node)]
                                     break
 
                             current_fqcn = None
@@ -67,14 +70,12 @@ def generate_signature_map(project_dir):
                                 anon_counts[current_fqcn] = 0
 
                             if current_fqcn:
-                                # GENERIC EXTRACTION (CLASS LEVEL)
                                 class_bounds = {}
                                 if hasattr(node, 'type_parameters') and node.type_parameters:
                                     for tp in node.type_parameters:
                                         bound_name = "Object"
                                         tb = getattr(tp, 'type_bound', None)
                                         if tb:
-                                            # Unwrap if it's a list (javalang inconsistency)
                                             if isinstance(tb, list) and len(tb) > 0:
                                                 tb = tb[0]
                                             if hasattr(tb, 'name') and tb.name:
@@ -94,7 +95,6 @@ def generate_signature_map(project_dir):
                                 for method in methods:
                                     method_name = method.name if isinstance(method, javalang.tree.MethodDeclaration) else "<init>"
 
-                                    # GENERIC EXTRACTION (METHOD LEVEL)
                                     method_bounds = class_bounds.copy()
                                     if hasattr(method, 'type_parameters') and method.type_parameters:
                                         for tp in method.type_parameters:
@@ -120,8 +120,10 @@ def generate_signature_map(project_dir):
 
                                         dims = getattr(p.type, 'dimensions', 0)
                                         dim_count = dims if isinstance(dims, int) else len(dims)
-                                        if dim_count > 0: t_name += "[]" * dim_count
-                                        if getattr(p, 'varargs', False): t_name += "[]"
+                                        if dim_count > 0:
+                                            t_name += "[]" * dim_count
+                                        if getattr(p, 'varargs', False):
+                                            t_name += "[]"
 
                                         param_types.append(t_name)
 
@@ -135,11 +137,11 @@ def generate_signature_map(project_dir):
 
                                     if line_num:
                                         key = f"{current_fqcn}.{method_name}.{param_sig}"
-                                        out_file.write(f"{key}={line_num}\n")
+                                        output_handle.write(f"{key}={line_num}\n")
                                         lines_written += 1
 
-                    except Exception as e:
-                        print(f"    [WARN] javalang skipped '{file}': {type(e).__name__} - {e}")
+                    except Exception as exc:
+                        print(f"    [WARN] javalang skipped '{file_name}': {type(exc).__name__} - {exc}")
                         failed_files += 1
 
     print(f"Pre-flight: Mapped {lines_written} exact method signatures.")

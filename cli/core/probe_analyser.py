@@ -3,94 +3,18 @@ import sys
 import time
 from collections import defaultdict
 
-try:
-    from maven_runner import run_maven
-    from artifact_reader import (read_probes, read_hits, read_test_outcomes, read_perturbations, )
-    from signature_mapper import generate_signature_map
-except ModuleNotFoundError:
-    from .maven_runner import run_maven
-    from .artifact_reader import (read_probes, read_hits, read_test_outcomes, read_perturbations,)
-    from .signature_mapper import generate_signature_map
+from .maven_runner import run_maven
+from .artifact_reader import (
+    parse_probe,
+    read_hits,
+    read_perturbations,
+    read_probes,
+    read_test_outcomes,
+)
+from .signature_mapper import generate_signature_map
 
-# ---------------------------------------------------------------------------
-# Probe description helpers
-# ---------------------------------------------------------------------------
-
-_GENERIC_RE = re.compile(r'<.*?>')
-
-def parse_probe(desc):
-    """
-    Extract all structured fields from a probe description string.
-
-    Returns
-    -------
-    (modifier, fqcn, method_name, location, operator)  — all str.
-
-    modifier   : the raw modification label, e.g. "boolean return value"
-    fqcn       : fully-qualified class name, or "unknown"
-    method_name: simple method name, or "unknown"
-    location   : "Return" | "Argument" | "Variable" | "Unknown"
-    operator   : short label combining location and type, e.g. "Ret-Boolean"
-    """
-    parts = desc.rsplit(" in ", 1)
-    if len(parts) != 2:
-        return "unknown", "unknown", "unknown", "Unknown", "Unknown"
-
-    mod = parts[0].replace("Modified ", "").strip()
-    sig = parts[1].strip()
-
-    # Derive location and operator from the modifier string
-    mod_lower = mod.lower()
-    if "return" in mod_lower:
-        location, loc_abbr = "Return", "Ret"
-    elif "argument" in mod_lower:
-        location, loc_abbr = "Argument", "Arg"
-    elif "variable" in mod_lower:
-        location, loc_abbr = "Variable", "Var"
-    else:
-        location, loc_abbr = "Unknown", "Unk"
-
-    if "boolean" in mod_lower:
-        type_abbr = "Boolean"
-    elif "integer" in mod_lower or "int " in mod_lower:
-        type_abbr = "Integer"
-    else:
-        type_abbr = "Object"
-
-    operator = f"{loc_abbr}-{type_abbr}"
-
-    prefix = sig.split('(')[0].strip()
-    tokens = prefix.split()
-    if not tokens:
-        return mod, "unknown", "unknown", location, operator
-
-    fq_path = tokens[-1]
-    segments = fq_path.split('.')
-    if len(segments) < 2:
-        return mod, fq_path, "unknown", location, operator
-
-    is_constructor = (
-        len(tokens) == 1
-        or tokens[-2] in ('public', 'protected', 'private')
-        or (segments[-1] and segments[-1][0].isupper())
-    )
-
-    if is_constructor:
-        fqcn = fq_path
-        method_name = segments[-1]
-    else:
-        fqcn = '.'.join(segments[:-1])
-        method_name = segments[-1]
-
-    fqcn = _GENERIC_RE.sub('', fqcn)
-    method_name = _GENERIC_RE.sub('', method_name)
-
-    return mod, fqcn, method_name, location, operator
 
 def get_warning(mod, method_name):
-    """
-    Return a human-readable diagnostic message for a probe that survived.
-    """
     mod_lower = mod.lower()
     if "return value" in mod_lower:
         return (
@@ -116,48 +40,25 @@ def get_warning(mod, method_name):
     )
 
 
-# ---------------------------------------------------------------------------
-# Discovery phase
-# ---------------------------------------------------------------------------
-
 def discovery(project_dir, agent_jar, target_package, log_file):
-    """
-    Run Maven with probe_id=-1 to enumerate all instrumentation points.
-
-    Returns
-    -------
-    probes            : dict  int -> description str
-    hits              : defaultdict(set)  int -> set of test names
-    discovery_duration: float  seconds elapsed
-    """
     print("Running Discovery Phase...")
     log_file.write("Running Discovery Phase...\n")
     start_time = time.time()
 
     try:
         generate_signature_map(project_dir)
-    except Exception as e:
-        print(f"Pre-flight mapping failed (falling back to bytecode lines): {e}")
+    except Exception as exc:
+        print(f"Pre-flight mapping failed (falling back to bytecode lines): {exc}")
 
-    code, stderr, _ = run_maven(-1, project_dir, agent_jar, target_package, maven_goal="test")
+    code, command_output, _ = run_maven(-1, project_dir, agent_jar, target_package, maven_goal="test")
     discovery_duration = time.time() - start_time
     log_file.write(f"Discovery finished in {discovery_duration:.2f} seconds.\n")
 
     if code != 0:
-        sys.exit(f"Discovery failed:\n{stderr[-1000:]}")
+        sys.exit(f"Discovery failed:\n{command_output[-1000:]}")
 
     raw_probes = read_probes(project_dir)
 
-    # Ghost probe filtering (project-level).
-    # The LVT is a compiler-level setting applied globally via Maven's -g flag.
-    # If ANY probe has a proper named description, debug info is present throughout.
-    # In that case drop:
-    #   1. JVM-slot probes ("(JVM slot N)") - compiler ghosts with no name.
-    #   2. Probes with no description or unparseable FQCN - registered via
-    #      idForLocation but never described by ProbeCatalog (ghost slot inside
-    #      a method that has LVT entries for other slots, e.g. "probe 190225529").
-    # If NO probe has a proper named description, debug info is globally absent;
-    # keep JVM-slot probes as the only available information.
     def _is_named(d):
         desc = d['desc']
         if not desc or re.search(r"\(JVM slot \d+\)", desc):
@@ -182,21 +83,13 @@ def discovery(project_dir, agent_jar, target_package, log_file):
     if not probes:
         sys.exit("No probes found.")
 
-
     hits = read_hits(project_dir)
     return probes, hits, discovery_duration
 
 
-# ---------------------------------------------------------------------------
-# Probe evaluation
-# ---------------------------------------------------------------------------
-
 def evaluate(probe_id, tests, project_dir, agent_jar, target_package,
              timeout_limit, log_file):
-    """
-    Run Maven for a single probe and classify per-test outcomes.
-    """
-    code, stderr, timed_out = run_maven(
+    _, command_output, timed_out = run_maven(
         probe_id, project_dir, agent_jar, target_package,
         timeout_limit, targeted_tests=tests, maven_goal="surefire:test"
     )
@@ -210,11 +103,10 @@ def evaluate(probe_id, tests, project_dir, agent_jar, target_package,
 
     outcomes = read_test_outcomes(project_dir)
     if not outcomes:
-        log_file.write(f"  No outcomes produced:\n{stderr[-1000:]}\n")
+        log_file.write(f"  No outcomes produced:\n{command_output[-1000:]}\n")
         return None, 0, 0, False, {}
 
     actions_map = read_perturbations(project_dir)
-
     test_results_dict = {}
     failed_count = 0
     passed_count = 0
@@ -242,16 +134,8 @@ def evaluate(probe_id, tests, project_dir, agent_jar, target_package,
     return test_results_dict, passed_count, failed_count, False, actions_map
 
 
-# ---------------------------------------------------------------------------
-# Full analysis loop
-# ---------------------------------------------------------------------------
-
 def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                  dynamic_timeout, log_file, batch_callback=None, batch_size=100):
-    """
-    Iterate over every discovered probe, evaluate it, and aggregate results.
-    If a batch_callback is provided, it flushes the current probe results every N iterations.
-    """
     master_probes = {}
     for pid, probe_data in sorted(probes.items()):
         probe_desc = probe_data['desc']
@@ -270,11 +154,9 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
 
     global_tier3_probes = {}
     errors_count = skipped_count = 0
-
     total_probes = len(probes)
     current_probe_idx = 0
 
-    # Batch tracking
     batch_counter = 0
     batch_master_probes = {}
 
@@ -291,13 +173,10 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
         mp = master_probes[pid]
         fqcn = mp['fqcn']
         m_name = mp['method']
-        mod = parse_probe(probe_desc)[0]
 
         if not tests:
             log_file.write("  SKIP: No tests hit this probe\n")
             skipped_count += 1
-
-            # Register Un-hit to batch
             batch_master_probes[pid] = mp
             batch_counter += 1
             if batch_callback and batch_counter >= batch_size:
@@ -308,7 +187,7 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
 
         sorted_tests = sorted(tests)
 
-        test_results_dict, p_count, f_count, is_timeout, actions_map = evaluate(
+        test_results_dict, _, _, is_timeout, actions_map = evaluate(
             pid, tests, project_dir, agent_jar, target_package,
             dynamic_timeout, log_file,
         )
@@ -389,7 +268,6 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
         else:
             errors_count += 1
 
-        # Register evaluated probe to batch
         batch_master_probes[pid] = mp
         batch_counter += 1
         if batch_callback and batch_counter >= batch_size:
@@ -397,11 +275,9 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
             batch_master_probes = {}
             batch_counter = 0
 
-    # Flush any remaining probes that didn't hit the limit exactly
     if batch_callback and batch_master_probes:
         batch_callback(batch_master_probes)
 
-    # ── Build dashboard_ledger from master_probes ──────────────────────────
     dashboard_ledger = []
     for pid, mp in sorted(master_probes.items(), key=lambda x: -len(x[1]['test_outcomes'])):
         if mp['status'] in ('Survived', 'Clean Kill'):
@@ -411,10 +287,9 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                 'method': mp['method'],
                 'tests': sorted(mp['test_outcomes'].keys()),
                 'tier': tier,
-                'line': mp.get('line', -1)  # Integrated line number
+                'line': mp.get('line', -1)
             })
 
-    # ── Absolute probe metrics ─────────────────────────────────────────────
     total_discovered = len(master_probes)
     total_unhit = sum(1 for mp in master_probes.values() if mp['status'] == 'Un-hit')
     total_executed = total_discovered - total_unhit
@@ -423,7 +298,6 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
     timeouts_count = sum(1 for mp in master_probes.values() if mp['status'] == 'TIMEOUT')
     survivals_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Survived')
 
-    # ── Per-test summary for Test-Centric tab ─────────────────────────────
     test_summary = {}
     for pid, mp in master_probes.items():
         for t_name, t_data in mp['test_outcomes'].items():
@@ -450,19 +324,10 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
         'skipped': skipped_count,
     }
 
-    return (
-        master_probes,
-        dashboard_ledger,
-        dashboard_methods,
-        dashboard_tests,
-        test_summary,
-        metrics,
-        global_tier3_probes,
-    )
+    return master_probes, dashboard_ledger, dashboard_methods, dashboard_tests, test_summary, metrics, global_tier3_probes
 
 
 def format_analytics(metrics):
-    """Return a formatted analytics block suitable for writing to the log."""
     return f"""
         {'=' * 60}
                          FINAL ANALYTICS

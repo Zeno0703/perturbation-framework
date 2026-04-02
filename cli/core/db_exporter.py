@@ -1,69 +1,61 @@
 import json
 import os
 
-try:
-    from probe_analyser import parse_probe
-except ModuleNotFoundError:
-    from .probe_analyser import parse_probe
+from .artifact_reader import parse_probe
 
 
 def append_to_database(project_name, master_probes, hit_counts, db_path):
-    """
-    Serialise *master_probes* for *project_name* and append the rows to the
-    JSON database at *db_path*. Creates the file if it does not exist yet;
-    merges into it if it does.
-    """
     probes_rows = []
     executions_rows = []
 
-    for pid, mp in master_probes.items():
-        desc = mp['desc']
-        modifier, fqcn, method, location, operator = parse_probe(desc)
+    for probe_id, probe_data in master_probes.items():
+        probe_description = probe_data["desc"]
+        modifier, fully_qualified_class_name, method_name, location, operator = parse_probe(probe_description)
 
-        tests_hitting = sorted(mp['test_outcomes'].keys()) if mp['test_outcomes'] else []
-        total_hits = sum(hit_counts[pid].get(t, 1) for t in tests_hitting)
-        probe_outcome = mp['status']
+        tests_hitting = sorted(probe_data["test_outcomes"].keys()) if probe_data["test_outcomes"] else []
+        total_hits = sum(hit_counts[probe_id].get(test_name, 1) for test_name in tests_hitting)
+        probe_outcome = probe_data["status"]
 
         probes_rows.append({
-            "project":          project_name,
-            "probe_id":         pid,
-            "probe_desc":       desc,
-            "asmDescriptor":    mp.get('asmDescriptor', ''),
-            "line":             mp.get('line', -1),
-            "operator":         operator,
-            "location":         location,
-            "modifier":         modifier,
-            "fqcn":             fqcn,
-            "method":           method,
+            "project": project_name,
+            "probe_id": probe_id,
+            "probe_desc": probe_description,
+            "asmDescriptor": probe_data.get("asmDescriptor", ""),
+            "line": probe_data.get("line", -1),
+            "operator": operator,
+            "location": location,
+            "modifier": modifier,
+            "fqcn": fully_qualified_class_name,
+            "method": method_name,
             "total_hits":       total_hits,
             "unique_tests_hit": len(tests_hitting),
             "probe_outcome":    probe_outcome,
             "timed_out":        probe_outcome == "TIMEOUT",
         })
 
-        for t_name, t_data in mp['test_outcomes'].items():
-            outcome = t_data['outcome']
-            exception = t_data['exception'] or 'none'
+        for test_name, test_data in probe_data["test_outcomes"].items():
+            outcome = test_data["outcome"]
+            exception = test_data["exception"] or "none"
 
-            if outcome == 'clean':
+            if outcome == "clean":
                 t_outcome, exc_family = "FAIL by Assert", "none"
                 exception = "none"
-            elif outcome == 'dirty':
+            elif outcome == "dirty":
                 t_outcome, exc_family = "FAIL by Exception", "JVM-Generic"
-            elif outcome == 'timeout':
+            elif outcome == "timeout":
                 t_outcome, exc_family = "FAIL by Exception", "JVM-Timeout"
             else:
                 t_outcome, exc_family = "PASS", "none"
                 exception = "none"
 
             executions_rows.append({
-                "project":              project_name,
-                "probe_id":             pid,
-                "test":                 t_name,
-                "hits_in_test":         hit_counts[pid].get(t_name, 1),
-                "test_outcome":         t_outcome,
-                "exception":            exception,
-                "exception_family":     exc_family,
+                "project": project_name,
+                "probe_id": probe_id,
+                "test": test_name,
+                "hits_in_test": hit_counts[probe_id].get(test_name, 1),
+                "test_outcome": t_outcome,
+                "exception": exception,
+                "exception_family": exc_family,
                 "perturbation_actions": [],
             })
 
@@ -89,10 +81,6 @@ def append_to_database(project_name, master_probes, hit_counts, db_path):
 
 
 def get_recorded_probes(db_path, project_name):
-    """
-    Return the set of probe IDs already recorded for the given project.
-    Returns an empty set if the file does not exist.
-    """
     if not os.path.isfile(db_path):
         return set()
     try:
