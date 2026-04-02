@@ -71,6 +71,8 @@ def append_to_database(project_name, master_probes, hit_counts, db_path):
     db["probes"].extend(probes_rows)
     db["test_executions"].extend(executions_rows)
 
+    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+
     with open(db_path, "w", encoding="utf-8") as f:
         json.dump(db, f, indent=2)
 

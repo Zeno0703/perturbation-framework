@@ -1,6 +1,9 @@
-import argparse
-import json
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import json
+import argparse
 import sys
 import time
 import webbrowser
