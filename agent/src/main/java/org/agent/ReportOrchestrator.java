@@ -1,9 +1,11 @@
-package org.tracking;
+package org.agent;
 
-import org.probe.ProbeCatalog;
+import org.registry.ProbeCatalog;
+import org.runtime.ProbeExecutionTracker;
+import org.runtime.TestOutcomeTracker;
 import java.nio.file.Path;
 
-public class ReportManager {
+public class ReportOrchestrator {
 
     public static void generateAllReports(Path outDir) {
         dumpQuietly(() -> ProbeCatalog.dumpTo(outDir), "probes");

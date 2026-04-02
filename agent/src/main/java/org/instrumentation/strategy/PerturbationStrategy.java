@@ -1,12 +1,13 @@
-package org.instrumentation;
+package org.instrumentation.strategy;
 
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
+import org.instrumentation.AsmMethodAnalyser;
 import java.util.Map;
 
 public interface PerturbationStrategy {
     // Centralized ASM Constants
-    String GATE_CLASS = "org/probe/PerturbationGate";
+    String GATE_CLASS = "org/runtime/PerturbationGate";
     String GATE_METHOD = "apply";
     String DESC_INT = "(II)I";
     String DESC_BOOL = "(ZI)Z";

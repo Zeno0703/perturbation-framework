@@ -1,4 +1,4 @@
-package org.probe;
+package org.registry;
 
 import org.utils.FileUtils;
 

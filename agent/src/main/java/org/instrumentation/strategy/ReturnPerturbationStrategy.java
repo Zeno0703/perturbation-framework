@@ -1,4 +1,4 @@
-package org.instrumentation;
+package org.instrumentation.strategy;
 
 import net.bytebuddy.asm.AsmVisitorWrapper;
 import net.bytebuddy.description.method.MethodDescription;
@@ -9,6 +9,9 @@ import net.bytebuddy.jar.asm.Label;
 import net.bytebuddy.jar.asm.MethodVisitor;
 import net.bytebuddy.jar.asm.Opcodes;
 import net.bytebuddy.pool.TypePool;
+import org.instrumentation.AsmMethodAnalyser;
+import org.instrumentation.InstrumentationFilters;
+import org.registry.ProbeRegistrar;
 
 import java.util.Map;
 import static net.bytebuddy.matcher.ElementMatchers.any;

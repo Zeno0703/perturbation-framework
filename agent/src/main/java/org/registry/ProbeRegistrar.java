@@ -1,9 +1,8 @@
-package org.instrumentation;
+package org.registry;
 
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import org.agent.AgentConfig;
-import org.probe.ProbeCatalog;
 
 import java.io.FileInputStream;
 import java.io.InputStream;

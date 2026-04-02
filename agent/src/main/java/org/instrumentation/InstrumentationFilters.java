@@ -8,18 +8,19 @@ import java.security.ProtectionDomain;
 import static net.bytebuddy.matcher.ElementMatchers.nameContains;
 import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 
-class InstrumentationFilters {
+public class InstrumentationFilters {
 
-    static ElementMatcher.Junction<net.bytebuddy.description.NamedElement> getIgnoreMatcher() {
+    public static ElementMatcher.Junction<net.bytebuddy.description.NamedElement> getIgnoreMatcher() {
         return nameStartsWith("net.bytebuddy.")
                 .or(nameStartsWith("org.junit."))
+                .or(nameStartsWith("org.testing."))
                 .or(nameStartsWith("org.apache.maven."))
                 .or(nameStartsWith("java."))
                 .or(nameStartsWith("javax."))
                 .or(nameStartsWith("jdk."))
                 .or(nameStartsWith("sun."))
-                .or(nameStartsWith("org.probe."))
-                .or(nameStartsWith("org.tracking."))
+                .or(nameStartsWith("org.registry."))
+                .or(nameStartsWith("org.runtime."))
                 .or(nameStartsWith("org.utils."))
                 .or(nameStartsWith("org.instrumentation."))
                 .or(nameStartsWith("org.agent."))
@@ -31,13 +32,13 @@ class InstrumentationFilters {
                 .or(nameContains("$jacoco"));
     }
 
-    static boolean isTargetType(TypeDescription typeDesc, ProtectionDomain pd) {
+    public static boolean isTargetType(TypeDescription typeDesc, ProtectionDomain pd) {
         if (typeDesc.isAnnotation()) return false;
         if (!AgentConfig.TARGET_PACKAGE.isEmpty() && !typeDesc.getName().startsWith(AgentConfig.TARGET_PACKAGE)) return false;
         return isProductionCode(pd);
     }
 
-    static boolean isTargetMethod(MethodDescription method, TypeDescription type) {
+    public static boolean isTargetMethod(MethodDescription method, TypeDescription type) {
         String name = method.getInternalName();
         if (method.isAbstract() || method.isNative() || method.isTypeInitializer()) return false;
         if (method.isSynthetic() || method.isBridge() || name.contains("$")) return false;

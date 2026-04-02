@@ -1,11 +1,8 @@
-package org.probe;
+package org.runtime;
 
-import org.tracking.ProbeExecutionTracker;
-import org.tracking.TestContext;
+import org.agent.AgentConfig;
 
 public class PerturbationGate {
-
-    private static final int ACTIVE_PROBE = Integer.getInteger("perturb.activeProbe", -1);
 
     public static int apply(int value, int probeId) {
         try {
@@ -69,7 +66,7 @@ public class PerturbationGate {
 
         ProbeExecutionTracker.record(testId, probeId);
 
-        return (probeId == ACTIVE_PROBE) ? testId : null;
+        return (probeId == AgentConfig.PROBE_ID) ? testId : null;
     }
 
     private static void handleError(Throwable t, int probeId) {

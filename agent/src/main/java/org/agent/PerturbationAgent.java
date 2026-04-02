@@ -1,10 +1,9 @@
 package org.agent;
 
-import org.instrumentation.InstrumentationController;
-import org.probe.ProbeCatalog;
-import org.tracking.ProbeExecutionTracker;
-import org.tracking.ReportManager;
-import org.tracking.TestOutcomeTracker;
+import org.instrumentation.InstrumentationInstaller;
+import org.registry.ProbeCatalog;
+import org.runtime.ProbeExecutionTracker;
+import org.runtime.TestOutcomeTracker;
 
 import java.lang.instrument.Instrumentation;
 import java.nio.file.Files;
@@ -18,11 +17,11 @@ public class PerturbationAgent {
 
         TestOutcomeTracker.clear();
         ProbeExecutionTracker.clear();
-        InstrumentationController.install(inst);
+        InstrumentationInstaller.install(inst);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             ProbeCatalog.freeze();
-            ReportManager.generateAllReports(AgentConfig.OUT_DIR);
+            ReportOrchestrator.generateAllReports(AgentConfig.OUT_DIR);
         }));
     }
 }

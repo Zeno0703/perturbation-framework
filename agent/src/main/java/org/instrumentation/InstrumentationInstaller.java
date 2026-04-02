@@ -2,13 +2,17 @@ package org.instrumentation;
 
 import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.dynamic.DynamicType;
-import org.probe.PerturbationGate;
+import org.instrumentation.strategy.ArgumentPerturbationStrategy;
+import org.instrumentation.strategy.PerturbationStrategy;
+import org.instrumentation.strategy.ReturnPerturbationStrategy;
+import org.instrumentation.strategy.VariablePerturbationStrategy;
+import org.runtime.PerturbationGate;
 
 import java.lang.instrument.Instrumentation;
 import java.util.List;
 import java.util.Map;
 
-public class InstrumentationController {
+public class InstrumentationInstaller {
 
     public static void install(Instrumentation inst) {
         List<PerturbationStrategy> strategies = List.of(
