@@ -19,8 +19,6 @@ import static net.bytebuddy.matcher.ElementMatchers.any;
 
 public class VariablePerturbationStrategy implements PerturbationStrategy {
 
-    public VariablePerturbationStrategy() {}
-
     @Override
     public DynamicType.Builder<?> apply(DynamicType.Builder<?> builder, TypeDescription typeDesc, ClassLoader classLoader, Map<String, AsmMethodAnalyser.MethodLineInfo> lineInfoMap) {
         return builder.visit(

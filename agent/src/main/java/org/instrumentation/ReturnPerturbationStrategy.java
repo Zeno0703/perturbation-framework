@@ -19,7 +19,7 @@ public class ReturnPerturbationStrategy implements PerturbationStrategy {
     public DynamicType.Builder<?> apply(DynamicType.Builder<?> builder, TypeDescription typeDesc, ClassLoader classLoader, Map<String, AsmMethodAnalyser.MethodLineInfo> lineInfoMap) {
         return builder.visit(
                 new AsmVisitorWrapper.ForDeclaredMethods()
-                        .method(any(), new ReturnPerturberWrapper())
+                        .invokable(any(), new ReturnPerturberWrapper())
                         .writerFlags(net.bytebuddy.jar.asm.ClassWriter.COMPUTE_FRAMES)
         );
     }
@@ -70,7 +70,7 @@ public class ReturnPerturbationStrategy implements PerturbationStrategy {
 
         @Override
         public void visitInsn(int opcode) {
-            if (opcode >= Opcodes.IRETURN && opcode <= Opcodes.ARETURN) {
+            if (opcode == Opcodes.IRETURN || opcode == Opcodes.ARETURN) {
                 int probeId = ProbeRegistrar.registerReturn(methodSignature, currentLine, asmDesc, typeName);
 
                 if (opcode == Opcodes.IRETURN) {
@@ -80,7 +80,7 @@ public class ReturnPerturbationStrategy implements PerturbationStrategy {
                     } else {
                         super.visitMethodInsn(Opcodes.INVOKESTATIC, PerturbationStrategy.GATE_CLASS, PerturbationStrategy.GATE_METHOD, PerturbationStrategy.DESC_INT, false);
                     }
-                } else if (opcode == Opcodes.ARETURN) {
+                } else {
                     super.visitLdcInsn(probeId);
                     super.visitMethodInsn(Opcodes.INVOKESTATIC, PerturbationStrategy.GATE_CLASS, PerturbationStrategy.GATE_METHOD, PerturbationStrategy.DESC_OBJ, false);
                     super.visitTypeInsn(Opcodes.CHECKCAST, returnInternalName);
