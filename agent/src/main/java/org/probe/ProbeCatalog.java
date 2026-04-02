@@ -97,7 +97,7 @@ public class ProbeCatalog {
         return lineNumbers.getOrDefault(probeId, -1);
     }
 
-    public static void dumpTo(Path file) throws IOException {
+    public static void dumpTo(Path outDir) throws IOException {
         StringBuilder sb = new StringBuilder();
         for (int id : allProbeIds()) {
             sb.append("{\"id\":")
@@ -110,6 +110,6 @@ public class ProbeCatalog {
                     .append(jsonString(descriptorFor(id)))
                     .append("}\n");
         }
-        FileUtils.writeAtomic(file, sb.toString());
+        FileUtils.writeAtomic(outDir.resolve("probes.txt"), sb.toString());
     }
 }

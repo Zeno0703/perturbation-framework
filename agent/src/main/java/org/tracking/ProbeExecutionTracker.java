@@ -19,7 +19,7 @@ public class ProbeExecutionTracker {
     private static final Map<String, Set<Integer>> hits = new ConcurrentHashMap<>();
     private static final Queue<ActionRecord> actions = new ConcurrentLinkedQueue<>();
 
-    private record ActionRecord(String testId, Object original, Object perturbed) {}
+    private record ActionRecord(String testId, String original, String perturbed) {}
     private record HitRecord(String testId, Integer probeId) {}
 
     public static void record(String testId, int probeId) {
@@ -27,7 +27,18 @@ public class ProbeExecutionTracker {
     }
 
     public static void recordAction(String testId, Object original, Object perturbed) {
-        actions.add(new ActionRecord(testId, original, perturbed));
+        String origStr = safeToString(original);
+        String pertStr = safeToString(perturbed);
+        actions.add(new ActionRecord(testId, origStr, pertStr));
+    }
+
+    private static String safeToString(Object obj) {
+        if (obj == null) return "null";
+        try {
+            return String.valueOf(obj);
+        } catch (Throwable t) {
+            return obj.getClass().getName() + "@" + Integer.toHexString(System.identityHashCode(obj));
+        }
     }
 
     public static void clear() {
@@ -53,8 +64,8 @@ public class ProbeExecutionTracker {
                 outDir.resolve("perturbations.txt"),
                 actions,
                 a -> "{\"test\":" + jsonString(a.testId())
-                        + ",\"original\":" + jsonString(String.valueOf(a.original()))
-                        + ",\"perturbed\":" + jsonString(String.valueOf(a.perturbed()))
+                        + ",\"original\":" + jsonString(a.original())
+                        + ",\"perturbed\":" + jsonString(a.perturbed())
                         + "}"
         );
     }

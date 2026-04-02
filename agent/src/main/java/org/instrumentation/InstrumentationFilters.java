@@ -3,13 +3,12 @@ package org.instrumentation;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
+import org.agent.AgentConfig;
 import java.security.ProtectionDomain;
 import static net.bytebuddy.matcher.ElementMatchers.nameContains;
 import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 
 class InstrumentationFilters {
-
-    private static final String TARGET_PACKAGE = System.getProperty("perturb.package", "");
 
     static ElementMatcher.Junction<net.bytebuddy.description.NamedElement> getIgnoreMatcher() {
         return nameStartsWith("net.bytebuddy.")
@@ -34,7 +33,7 @@ class InstrumentationFilters {
 
     static boolean isTargetType(TypeDescription typeDesc, ProtectionDomain pd) {
         if (typeDesc.isAnnotation()) return false;
-        if (!TARGET_PACKAGE.isEmpty() && !typeDesc.getName().startsWith(TARGET_PACKAGE)) return false;
+        if (!AgentConfig.TARGET_PACKAGE.isEmpty() && !typeDesc.getName().startsWith(AgentConfig.TARGET_PACKAGE)) return false;
         return isProductionCode(pd);
     }
 

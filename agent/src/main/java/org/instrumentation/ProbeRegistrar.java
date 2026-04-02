@@ -2,6 +2,7 @@ package org.instrumentation;
 
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
+import org.agent.AgentConfig;
 import org.probe.ProbeCatalog;
 
 import java.io.FileInputStream;
@@ -13,8 +14,7 @@ public class ProbeRegistrar {
     private static final Properties signatureLines = new Properties();
 
     static {
-        String outDir = System.getProperty("perturb.outDir", "target/perturb");
-        try (InputStream is = new FileInputStream(outDir + "/method_lines.properties")) {
+        try (InputStream is = new FileInputStream(AgentConfig.OUT_DIR_STR + "/method_lines.properties")) {
             signatureLines.load(is);
         } catch (Exception ignored) {}
     }
@@ -25,17 +25,18 @@ public class ProbeRegistrar {
     }
 
     public static String resolveTypeName(TypeDescription.Generic type) {
+        if (type.represents(boolean.class)) return "boolean";
         if (type.represents(int.class) || type.represents(short.class) ||
                 type.represents(byte.class) || type.represents(char.class)) return "Integer";
-        if (type.represents(boolean.class)) return "boolean";
         return "Object";
     }
 
     public static String resolveTypeName(String asmDescriptor) {
-        if (asmDescriptor.equals("Z")) return "boolean";
-        if (asmDescriptor.equals("I") || asmDescriptor.equals("S") ||
-                asmDescriptor.equals("B") || asmDescriptor.equals("C")) return "Integer";
-        return "Object";
+        return switch (asmDescriptor) {
+            case "Z" -> "boolean";
+            case "I", "S", "B", "C" -> "Integer";
+            default -> "Object";
+        };
     }
 
     public static int getSignatureLine(TypeDescription type, MethodDescription method, int fallbackLine) {

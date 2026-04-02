@@ -1,9 +1,11 @@
 package org.junit;
 
+import org.agent.AgentConfig;
 import org.junit.jupiter.api.extension.AfterEachCallback;
 import org.junit.jupiter.api.extension.BeforeEachCallback;
 import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.api.extension.TestWatcher;
+import org.tracking.ReportManager;
 import org.tracking.TestContext;
 import org.tracking.TestOutcomeTracker;
 
@@ -17,6 +19,7 @@ public class PerturbationJUnit5Extension implements BeforeEachCallback, AfterEac
     @Override
     public void afterEach(ExtensionContext context) {
         TestContext.exit();
+        ReportManager.generateAllReports(AgentConfig.OUT_DIR);
     }
 
     @Override
