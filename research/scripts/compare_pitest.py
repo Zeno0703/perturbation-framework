@@ -11,7 +11,7 @@ PROJECT_XML_MAP = {
     "Commons-Validator": "data/mutations-commons-validator.xml",
 }
 
-PERTURB_JSON_PATH = "data/database.json"
+PERTURB_JSON_PATH = "../data/database.json"
 
 PITEST_KILL_STATUSES  = {'KILLED', 'TIMED_OUT', 'MEMORY_ERROR', 'RUN_ERROR'}
 PERTURB_KILL_STATUSES = {'Clean Kill', 'Dirty Kill', 'TIMEOUT'}
