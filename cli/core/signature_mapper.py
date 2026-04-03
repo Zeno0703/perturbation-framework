@@ -38,6 +38,7 @@ def generate_signature_map(project_dir):
                             parent_fqcn = package_name
                             for ast_node in reversed(ast_path):
                                 if id(ast_node) in node_to_fqcn:
+                                    # We walk upward to grab the nearest known owner class/interface.
                                     parent_fqcn = node_to_fqcn[id(ast_node)]
                                     break
 
@@ -56,6 +57,7 @@ def generate_signature_map(project_dir):
                             elif isinstance(node, javalang.tree.EnumConstantDeclaration) and node.body:
                                 if parent_fqcn not in anon_counts:
                                     anon_counts[parent_fqcn] = 0
+                                # Keep numbering like JVM anonymous classes ($1, $2, ...).
                                 anon_counts[parent_fqcn] += 1
                                 current_fqcn = f"{parent_fqcn}${anon_counts[parent_fqcn]}"
                                 node_to_fqcn[id(node)] = current_fqcn
@@ -64,6 +66,7 @@ def generate_signature_map(project_dir):
                             elif isinstance(node, javalang.tree.ClassCreator) and node.body:
                                 if parent_fqcn not in anon_counts:
                                     anon_counts[parent_fqcn] = 0
+                                # Same numbering rule here so nested anonymous creators stay stable.
                                 anon_counts[parent_fqcn] += 1
                                 current_fqcn = f"{parent_fqcn}${anon_counts[parent_fqcn]}"
                                 node_to_fqcn[id(node)] = current_fqcn
@@ -80,6 +83,7 @@ def generate_signature_map(project_dir):
                                                 tb = tb[0]
                                             if hasattr(tb, 'name') and tb.name:
                                                 bound_name = tb.name.split('.')[-1]
+                                        # If a type variable cannot be resolved cleanly, Object is the safe fallback.
                                         class_bounds[tp.name] = bound_name
 
                                 methods = []
@@ -130,6 +134,7 @@ def generate_signature_map(project_dir):
                                     param_sig = ",".join(param_types)
                                     line_num = method.position.line if method.position else None
 
+                                    # This tends to match runtime signatures better than the method keyword line.
                                     if len(method.parameters) > 0 and method.parameters[0].position:
                                         line_num = method.parameters[0].position.line
                                     elif hasattr(method, 'return_type') and method.return_type and method.return_type.position:

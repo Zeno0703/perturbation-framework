@@ -1,5 +1,6 @@
 import sys
 import os
+# This lets `python main.py ...` work even when the package is not installed.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import json
@@ -74,10 +75,12 @@ def run_single_project(project_dir, agent_jar, target_package, formats, db_path,
             print(msg)
             log_file.write(msg)
 
+        # If discovery was slow, evaluations are usually slow too, so we scale timeout from that.
         dynamic_timeout = max(discovery_duration * 2.0, 10.0)
         log_file.write(f"Timeout for evaluations set to: {dynamic_timeout:.2f}s\n")
 
         def batch_callback(batch_probes):
+            # We save every batch so an interrupted run can continue where it stopped.
             if "json" in formats:
                 export_json(resolved_project_name, batch_probes, hits, db_path)
 

@@ -65,6 +65,7 @@ def discovery(project_dir, agent_jar, target_package, log_file):
             return False
         return parse_probe(desc)[1] != "unknown"
 
+    # We only drop JVM-slot probes if this project clearly has real LVT names.
     project_has_named = any(_is_named(d) for d in raw_probes.values())
 
     if project_has_named:
@@ -179,6 +180,7 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
             skipped_count += 1
             batch_master_probes[pid] = mp
             batch_counter += 1
+            # Even skipped probes are flushed in batches so resume data stays complete.
             if batch_callback and batch_counter >= batch_size:
                 batch_callback(batch_master_probes)
                 batch_master_probes = {}
@@ -186,6 +188,7 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
             continue
 
         sorted_tests = sorted(tests)
+        # Sorting gives deterministic logs and stable representative-test selection.
 
         test_results_dict, _, _, is_timeout, actions_map = evaluate(
             pid, tests, project_dir, agent_jar, target_package,
@@ -193,6 +196,7 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
         )
 
         if is_timeout:
+            # Timeout means this probe made tests hang, so we record timeout per touched test.
             for t in sorted_tests:
                 mp['test_outcomes'][t] = {'outcome': 'timeout', 'exception': 'TimeoutException'}
             mp['status'] = 'TIMEOUT'
@@ -217,6 +221,7 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                 t_actions = actions_map.get(t_name, [])
 
                 if "FAIL" in s_up:
+                    # Assertion-style failures are counted as clean kills (the test caught the semantic break).
                     if "ASSERT" in s_up or "COMPARISON" in s_up or "MULTIPLEFAILURES" in s_up:
                         mp['test_outcomes'][t_name] = {'outcome': 'clean', 'exception': None}
                         has_clean = True
@@ -227,6 +232,7 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                             'tier': 3, 'actions': t_actions, 'line': probe_line
                         })
                     else:
+                        # Non-assert failures are dirty kills (usually crashes/exceptions).
                         clean_exc = (
                             status.replace("FAIL (", "").rstrip(")")
                             if status.startswith("FAIL (") else status
@@ -258,6 +264,7 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                 dashboard_methods[method_key]['fqcn'] = fqcn
                 dashboard_methods[method_key]['method'] = m_name
                 dashboard_methods[method_key]['tests'].update(tests)
+                # For method view we just keep one representative action trace instead of duplicating all traces.
                 rep_actions = actions_map.get(sorted_tests[0], []) if sorted_tests else []
                 dashboard_methods[method_key]['probes'].append({
                     'id': pid, 'desc': probe_desc, 'tests': sorted_tests,
@@ -304,6 +311,7 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
             if t_name not in test_summary:
                 test_summary[t_name] = {'clean': 0, 'dirty': 0, 'survived': 0}
             outcome = t_data['outcome']
+            # In high-level analytics, timeout behaves like dirty because both are non-clean failures.
             key = outcome if outcome in ('clean', 'dirty', 'survived') else 'dirty'
             test_summary[t_name][key] += 1
     for t_name, s in test_summary.items():

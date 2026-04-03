@@ -57,6 +57,7 @@ def build_file_cache(project_dir, test_stats, dashboard_ledger, dashboard_method
 
     serialisable_cache = {}
     for (fqcn, is_test), content in raw_cache.items():
+        # If a test class and production class collide on key, we keep the production source.
         if fqcn not in serialisable_cache or not is_test:
             serialisable_cache[fqcn] = content
 

@@ -17,6 +17,7 @@ def clear_artifacts(project_dir):
 
 def run_maven(probe_id, project_dir, agent_jar, target_package,
               timeout_limit=None, targeted_tests=None, maven_goal="test"):
+    # Each run starts from clean artifact files so parsers only see fresh data.
     clear_artifacts(project_dir)
 
     arg_line = (
@@ -50,6 +51,7 @@ def run_maven(probe_id, project_dir, agent_jar, target_package,
         return process.returncode, combined_output, False
 
     except subprocess.TimeoutExpired:
+        # Hard-kill timed out runs to avoid orphaned Maven/JVM processes.
         process.kill()
         process.communicate()
         return -1, "PROCESS TIMED OUT", True

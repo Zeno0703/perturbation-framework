@@ -50,6 +50,7 @@ def parse_probe(description):
         or signature_tokens[-2] in ("public", "protected", "private")
         or (path_segments[-1] and path_segments[-1][0].isupper())
     )
+    # If there is no explicit return type (or the tail looks like a class name), treat it as a constructor.
 
     if is_constructor:
         fully_qualified_class_name = fully_qualified_path
@@ -58,6 +59,7 @@ def parse_probe(description):
         fully_qualified_class_name = ".".join(path_segments[:-1])
         method_name = path_segments[-1]
 
+    # Probe strings can carry generic type bits that would break class/method matching later.
     fully_qualified_class_name = _GENERIC_RE.sub("", fully_qualified_class_name)
     method_name = _GENERIC_RE.sub("", method_name)
 
@@ -76,6 +78,7 @@ def _read_jsonl(project_dir: str, filename: str) -> list[dict]:
                 try:
                     results.append(json.loads(line))
                 except json.JSONDecodeError as exc:
+                    # One bad JSONL line should not block reading the rest of the artifact file.
                     print(f"[artifact_reader] {filename}:{line_number}: skipping malformed line: {exc}")
     except FileNotFoundError:
         pass
