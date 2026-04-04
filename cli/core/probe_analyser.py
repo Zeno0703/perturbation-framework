@@ -4,15 +4,8 @@ import time
 from collections import defaultdict
 
 from .maven_runner import run_maven
-from .artifact_reader import (
-    parse_probe,
-    read_hits,
-    read_perturbations,
-    read_probes,
-    read_test_outcomes,
-)
+from .artifact_reader import (read_probes, read_hits, read_test_outcomes, read_perturbations, parse_probe)
 from .signature_mapper import generate_signature_map
-
 
 def get_warning(mod, method_name):
     mod_lower = mod.lower()
@@ -39,7 +32,6 @@ def get_warning(mod, method_name):
         "The state either failed to propagate, or the assertions are too broad."
     )
 
-
 def discovery(project_dir, agent_jar, target_package, log_file):
     print("Running Discovery Phase...")
     log_file.write("Running Discovery Phase...\n")
@@ -47,15 +39,15 @@ def discovery(project_dir, agent_jar, target_package, log_file):
 
     try:
         generate_signature_map(project_dir)
-    except Exception as exc:
-        print(f"Pre-flight mapping failed (falling back to bytecode lines): {exc}")
+    except Exception as e:
+        print(f"Pre-flight mapping failed (falling back to bytecode lines): {e}")
 
-    code, command_output, _ = run_maven(-1, project_dir, agent_jar, target_package, maven_goal="test")
+    code, stderr, _ = run_maven(-1, project_dir, agent_jar, target_package, maven_goal="test")
     discovery_duration = time.time() - start_time
     log_file.write(f"Discovery finished in {discovery_duration:.2f} seconds.\n")
 
     if code != 0:
-        sys.exit(f"Discovery failed:\n{command_output[-1000:]}")
+        sys.exit(f"Discovery failed:\n{stderr[-1000:]}")
 
     raw_probes = read_probes(project_dir)
 
@@ -65,7 +57,6 @@ def discovery(project_dir, agent_jar, target_package, log_file):
             return False
         return parse_probe(desc)[1] != "unknown"
 
-    # We only drop JVM-slot probes if this project clearly has real LVT names.
     project_has_named = any(_is_named(d) for d in raw_probes.values())
 
     if project_has_named:
@@ -85,12 +76,22 @@ def discovery(project_dir, agent_jar, target_package, log_file):
         sys.exit("No probes found.")
 
     hits = read_hits(project_dir)
-    return probes, hits, discovery_duration
 
+    if not hits and probes:
+        msg = (
+            "\n[WARNING] 0 probe hits were mapped to actual tests! "
+            "All executions fell into 'UNKNOWN_TEST'.\n"
+            "Are you sure this target project uses JUnit 5 (Jupiter)?\n"
+            "This PoC requires JUnit 5 to track test boundaries.\n"
+        )
+        print(msg)
+        log_file.write(msg)
+
+    return probes, hits, discovery_duration
 
 def evaluate(probe_id, tests, project_dir, agent_jar, target_package,
              timeout_limit, log_file):
-    _, command_output, timed_out = run_maven(
+    code, stderr, timed_out = run_maven(
         probe_id, project_dir, agent_jar, target_package,
         timeout_limit, targeted_tests=tests, maven_goal="surefire:test"
     )
@@ -104,7 +105,7 @@ def evaluate(probe_id, tests, project_dir, agent_jar, target_package,
 
     outcomes = read_test_outcomes(project_dir)
     if not outcomes:
-        log_file.write(f"  No outcomes produced:\n{command_output[-1000:]}\n")
+        log_file.write(f"  No outcomes produced:\n{stderr[-1000:]}\n")
         return None, 0, 0, False, {}
 
     actions_map = read_perturbations(project_dir)
@@ -133,7 +134,6 @@ def evaluate(probe_id, tests, project_dir, agent_jar, target_package,
         )
 
     return test_results_dict, passed_count, failed_count, False, actions_map
-
 
 def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                  dynamic_timeout, log_file, batch_callback=None, batch_size=100):
@@ -180,7 +180,6 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
             skipped_count += 1
             batch_master_probes[pid] = mp
             batch_counter += 1
-            # Even skipped probes are flushed in batches so resume data stays complete.
             if batch_callback and batch_counter >= batch_size:
                 batch_callback(batch_master_probes)
                 batch_master_probes = {}
@@ -188,15 +187,13 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
             continue
 
         sorted_tests = sorted(tests)
-        # Sorting gives deterministic logs and stable representative-test selection.
 
-        test_results_dict, _, _, is_timeout, actions_map = evaluate(
+        test_results_dict, p_count, f_count, is_timeout, actions_map = evaluate(
             pid, tests, project_dir, agent_jar, target_package,
             dynamic_timeout, log_file,
         )
 
         if is_timeout:
-            # Timeout means this probe made tests hang, so we record timeout per touched test.
             for t in sorted_tests:
                 mp['test_outcomes'][t] = {'outcome': 'timeout', 'exception': 'TimeoutException'}
             mp['status'] = 'TIMEOUT'
@@ -221,7 +218,6 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                 t_actions = actions_map.get(t_name, [])
 
                 if "FAIL" in s_up:
-                    # Assertion-style failures are counted as clean kills (the test caught the semantic break).
                     if "ASSERT" in s_up or "COMPARISON" in s_up or "MULTIPLEFAILURES" in s_up:
                         mp['test_outcomes'][t_name] = {'outcome': 'clean', 'exception': None}
                         has_clean = True
@@ -232,7 +228,6 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                             'tier': 3, 'actions': t_actions, 'line': probe_line
                         })
                     else:
-                        # Non-assert failures are dirty kills (usually crashes/exceptions).
                         clean_exc = (
                             status.replace("FAIL (", "").rstrip(")")
                             if status.startswith("FAIL (") else status
@@ -264,7 +259,6 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                 dashboard_methods[method_key]['fqcn'] = fqcn
                 dashboard_methods[method_key]['method'] = m_name
                 dashboard_methods[method_key]['tests'].update(tests)
-                # For method view we just keep one representative action trace instead of duplicating all traces.
                 rep_actions = actions_map.get(sorted_tests[0], []) if sorted_tests else []
                 dashboard_methods[method_key]['probes'].append({
                     'id': pid, 'desc': probe_desc, 'tests': sorted_tests,
@@ -311,7 +305,6 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
             if t_name not in test_summary:
                 test_summary[t_name] = {'clean': 0, 'dirty': 0, 'survived': 0}
             outcome = t_data['outcome']
-            # In high-level analytics, timeout behaves like dirty because both are non-clean failures.
             key = outcome if outcome in ('clean', 'dirty', 'survived') else 'dirty'
             test_summary[t_name][key] += 1
     for t_name, s in test_summary.items():
@@ -333,7 +326,6 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
     }
 
     return master_probes, dashboard_ledger, dashboard_methods, dashboard_tests, test_summary, metrics, global_tier3_probes
-
 
 def format_analytics(metrics):
     return f"""
