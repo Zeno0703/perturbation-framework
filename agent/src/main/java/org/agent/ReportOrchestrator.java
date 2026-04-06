@@ -13,6 +13,10 @@ public class ReportOrchestrator {
         dumpQuietly(() -> TestOutcomeTracker.dumpTo(outDir), "test outcomes");
     }
 
+    public static void dumpOutcomesOnly(Path outDir) {
+        dumpQuietly(() -> TestOutcomeTracker.dumpTo(outDir), "test outcomes");
+    }
+
     private interface DumpTask { void execute() throws Exception; }
 
     private static void dumpQuietly(DumpTask task, String name) {

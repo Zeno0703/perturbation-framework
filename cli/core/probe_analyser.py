@@ -7,6 +7,7 @@ from .maven_runner import run_maven
 from .artifact_reader import (read_probes, read_hits, read_test_outcomes, read_perturbations, parse_probe)
 from .signature_mapper import generate_signature_map
 
+
 def get_warning(mod, method_name):
     mod_lower = mod.lower()
     if "return value" in mod_lower:
@@ -31,6 +32,7 @@ def get_warning(mod, method_name):
         f"Diagnostic: <code>{method_name}()</code> was perturbed, but the test passed. "
         "The state either failed to propagate, or the assertions are too broad."
     )
+
 
 def discovery(project_dir, agent_jar, target_package, log_file):
     print("Running Discovery Phase...")
@@ -89,6 +91,7 @@ def discovery(project_dir, agent_jar, target_package, log_file):
 
     return probes, hits, discovery_duration
 
+
 def evaluate(probe_id, tests, project_dir, agent_jar, target_package,
              timeout_limit, log_file):
     code, stderr, timed_out = run_maven(
@@ -96,44 +99,61 @@ def evaluate(probe_id, tests, project_dir, agent_jar, target_package,
         timeout_limit, targeted_tests=tests, maven_goal="surefire:test"
     )
 
-    if timed_out:
-        log_file.write(
-            f"  - TIMEOUT! Run exceeded {timeout_limit:.2f} seconds.\n"
-            "  Result: Discarded (Infinite Loop Detected)\n"
-        )
-        return {t: "FAIL (TIMEOUT)" for t in tests}, 0, len(tests), True, {}
-
     outcomes = read_test_outcomes(project_dir)
-    if not outcomes:
-        log_file.write(f"  No outcomes produced:\n{stderr[-1000:]}\n")
-        return None, 0, 0, False, {}
-
     actions_map = read_perturbations(project_dir)
+
     test_results_dict = {}
     failed_count = 0
     passed_count = 0
 
+    if timed_out:
+        log_file.write(f"  - TIMEOUT! Run exceeded {timeout_limit:.2f} seconds.\n")
+
+    any_breadcrumb = bool(outcomes)
+    instant_jvm_death = not any_breadcrumb and (timed_out or code != 0)
+
     for test in sorted(tests):
-        status = outcomes.get(test, 'MISSING')
-        test_results_dict[test] = status
+        status = outcomes.get(test)
 
-        test_actions = actions_map.get(test, [])
-        action_str = f"  ({', '.join(test_actions)})" if test_actions else ""
-        log_file.write(f"  - {test}: {status}{action_str}\n")
-
-        if "FAIL" in status.upper():
+        if instant_jvm_death:
+            if timed_out:
+                test_results_dict[test] = "FAIL (TIMEOUT)"
+                log_file.write(f"  - {test}: FAIL (TIMEOUT) [Hung before tests started]\n")
+            else:
+                test_results_dict[test] = "FAIL (JVM CRASH)"
+                log_file.write(f"  - {test}: FAIL (JVM CRASH) [Violent exit before first test]\n")
             failed_count += 1
-        elif status.upper() == "PASS":
-            passed_count += 1
+            instant_jvm_death = False  # Only blame the first test
 
-    total = failed_count + passed_count
-    if total > 0:
-        log_file.write(
-            f"  Tests catching perturbation: "
-            f"{failed_count / total * 100:.2f}% ({failed_count}/{total})\n"
-        )
+        # 1. It started, but never finished!
+        elif status == "STARTED":
+            if timed_out:
+                test_results_dict[test] = "FAIL (TIMEOUT)"
+                log_file.write(f"  - {test}: FAIL (TIMEOUT) [Triggered Infinite Loop]\n")
+            else:
+                test_results_dict[test] = "FAIL (JVM CRASH)"
+                log_file.write(f"  - {test}: FAIL (JVM CRASH) [Violent exit during execution]\n")
+            failed_count += 1
 
-    return test_results_dict, passed_count, failed_count, False, actions_map
+        # 2. Finished safely (PASS, Exception, or UNREACHED from Java)
+        elif status:
+            test_results_dict[test] = status
+            test_actions = actions_map.get(test, [])
+            action_str = f"  ({', '.join(test_actions)})" if test_actions else ""
+            log_file.write(f"  - {test}: {status}{action_str}\n")
+
+            if "FAIL" in status.upper():
+                failed_count += 1
+            elif status.upper() == "PASS":
+                passed_count += 1
+
+        # 3. Never even reached the starting line
+        else:
+            test_results_dict[test] = "UNREACHED (ABORTED / SKIPPED)"
+            log_file.write(f"  - {test}: UNREACHED (Never started due to previous abort)\n")
+
+    return test_results_dict, passed_count, failed_count, timed_out, actions_map
+
 
 def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                  dynamic_timeout, log_file, batch_callback=None, batch_size=100):
@@ -193,31 +213,23 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
             dynamic_timeout, log_file,
         )
 
-        if is_timeout:
-            for t in sorted_tests:
-                mp['test_outcomes'][t] = {'outcome': 'timeout', 'exception': 'TimeoutException'}
-            mp['status'] = 'TIMEOUT'
-
-            method_key = f"{fqcn}#{m_name}"
-            dashboard_methods[method_key]['fqcn'] = fqcn
-            dashboard_methods[method_key]['method'] = m_name
-            dashboard_methods[method_key]['tests'].update(tests)
-            dashboard_methods[method_key]['probes'].append({
-                'id': pid, 'desc': probe_desc, 'tests': sorted_tests,
-                'actions': ['Infinite Loop / Timeout'],
-                'exceptions': ['TIMEOUT: Execution exceeded time limit'],
-                'line': probe_line
-            })
-
-        elif test_results_dict:
+        if test_results_dict:
             probe_exceptions = set()
-            has_clean = has_dirty = has_survived = False
+            has_clean = has_dirty = has_survived = has_timeout = False
 
             for t_name, status in test_results_dict.items():
                 s_up = status.upper()
                 t_actions = actions_map.get(t_name, [])
 
-                if "FAIL" in s_up:
+                if "UNREACHED" in s_up:
+                    mp['test_outcomes'][t_name] = {'outcome': 'unreached', 'exception': None}
+                    continue
+
+                if "TIMEOUT" in s_up:
+                    mp['test_outcomes'][t_name] = {'outcome': 'timeout', 'exception': 'TimeoutException'}
+                    has_timeout = True
+                    has_dirty = True
+                elif "FAIL" in s_up:
                     if "ASSERT" in s_up or "COMPARISON" in s_up or "MULTIPLEFAILURES" in s_up:
                         mp['test_outcomes'][t_name] = {'outcome': 'clean', 'exception': None}
                         has_clean = True
@@ -228,10 +240,7 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
                             'tier': 3, 'actions': t_actions, 'line': probe_line
                         })
                     else:
-                        clean_exc = (
-                            status.replace("FAIL (", "").rstrip(")")
-                            if status.startswith("FAIL (") else status
-                        )
+                        clean_exc = status.replace("FAIL (", "").rstrip(")") if status.startswith("FAIL (") else status
                         mp['test_outcomes'][t_name] = {'outcome': 'dirty', 'exception': clean_exc}
                         has_dirty = True
                         probe_exceptions.add(clean_exc)
@@ -249,22 +258,31 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
 
             if has_clean:
                 mp['status'] = 'Clean Kill'
+            elif has_timeout and not probe_exceptions:
+                # Pure timeout — no exception-based dirty kills alongside it
+                mp['status'] = 'TIMEOUT'
             elif has_dirty:
                 mp['status'] = 'Dirty Kill'
             elif has_survived:
                 mp['status'] = 'Survived'
+            else:
+                mp['status'] = 'Errors / Unreached'
 
-            if has_dirty and not has_clean:
+            if has_dirty:
                 method_key = f"{fqcn}#{m_name}"
                 dashboard_methods[method_key]['fqcn'] = fqcn
                 dashboard_methods[method_key]['method'] = m_name
                 dashboard_methods[method_key]['tests'].update(tests)
                 rep_actions = actions_map.get(sorted_tests[0], []) if sorted_tests else []
+
                 dashboard_methods[method_key]['probes'].append({
                     'id': pid, 'desc': probe_desc, 'tests': sorted_tests,
                     'actions': rep_actions,
-                    'exceptions': sorted(list(probe_exceptions)),
-                    'line': probe_line
+                    'exceptions': sorted(list(probe_exceptions)) if not has_timeout else [
+                        'TIMEOUT: Execution exceeded time limit'],
+                    'line': probe_line,
+                    'outcomes_dict': mp['test_outcomes'],
+                    'is_mixed': has_clean
                 })
         else:
             errors_count += 1
@@ -281,21 +299,22 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
 
     dashboard_ledger = []
     for pid, mp in sorted(master_probes.items(), key=lambda x: -len(x[1]['test_outcomes'])):
-        if mp['status'] in ('Survived', 'Clean Kill'):
-            tier = 1 if mp['status'] == 'Survived' else 3
+        if mp['status'] in ('Survived', 'Clean Kill', 'Dirty Kill', 'TIMEOUT'):
+            tier = 1 if mp['status'] == 'Survived' else (3 if mp['status'] == 'Clean Kill' else 2)
             dashboard_ledger.append({
                 'id': mp['id'], 'desc': mp['desc'], 'fqcn': mp['fqcn'],
                 'method': mp['method'],
                 'tests': sorted(mp['test_outcomes'].keys()),
                 'tier': tier,
-                'line': mp.get('line', -1)
+                'line': mp.get('line', -1),
+                'outcomes_dict': mp['test_outcomes']  # Pass the outcomes dict for the UI
             })
 
     total_discovered = len(master_probes)
     total_unhit = sum(1 for mp in master_probes.values() if mp['status'] == 'Un-hit')
     total_executed = total_discovered - total_unhit
     clean_kills_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Clean Kill')
-    dirty_kills_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Dirty Kill')
+    dirty_kills_count = sum(1 for mp in master_probes.values() if mp['status'] in ('Dirty Kill', 'TIMEOUT'))
     timeouts_count = sum(1 for mp in master_probes.values() if mp['status'] == 'TIMEOUT')
     survivals_count = sum(1 for mp in master_probes.values() if mp['status'] == 'Survived')
 
@@ -303,10 +322,11 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
     for pid, mp in master_probes.items():
         for t_name, t_data in mp['test_outcomes'].items():
             if t_name not in test_summary:
-                test_summary[t_name] = {'clean': 0, 'dirty': 0, 'survived': 0}
+                test_summary[t_name] = {'clean': 0, 'dirty': 0, 'survived': 0, 'unreached': 0}
             outcome = t_data['outcome']
-            key = outcome if outcome in ('clean', 'dirty', 'survived') else 'dirty'
+            key = outcome if outcome in ('clean', 'dirty', 'survived', 'unreached') else 'dirty'
             test_summary[t_name][key] += 1
+
     for t_name, s in test_summary.items():
         s['vulnerable'] = s['survived'] > 0
 
@@ -325,7 +345,9 @@ def run_analysis(probes, hits, project_dir, agent_jar, target_package,
         'skipped': skipped_count,
     }
 
-    return master_probes, dashboard_ledger, dashboard_methods, dashboard_tests, test_summary, metrics, global_tier3_probes
+    return (master_probes, dashboard_ledger, dashboard_methods, dashboard_tests, test_summary, metrics,
+            global_tier3_probes)
+
 
 def format_analytics(metrics):
     return f"""
@@ -339,7 +361,7 @@ def format_analytics(metrics):
         {'-' * 60}
         PROBE OUTCOMES:
         Clean Kills             : {metrics['clean_kills']}
-        Dirty Kills             : {metrics['dirty_kills']}
+        Dirty Kills (+Timeouts) : {metrics['dirty_kills']}
         Timeouts                : {metrics['timeouts']}
         Survived (Vulnerability): {metrics['survivals']}
         {'-' * 60}

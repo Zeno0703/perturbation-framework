@@ -88,11 +88,19 @@ def build_ledger_row(probe, project_dir, probe_status=None):
         status_text = ps
         row_style = ""
 
-    witness_list = (
-        "".join([f"<li style='margin-bottom: 4px;'>{escape_html(test_name)}</li>" for test_name in probe['tests']])
-        if probe['tests'] else
-        "<li style='color:var(--text-muted); font-style:italic;'>No tests hit this probe.</li>"
-    )
+    if not probe['tests']:
+        witness_list = "<li style='color:var(--text-muted); font-style:italic;'>No tests hit this probe.</li>"
+    else:
+        # Loop through the tests and apply strikethrough if unreached
+        witness_items = []
+        for test_name in probe['tests']:
+            outcome = probe.get('outcomes_dict', {}).get(test_name, {}).get('outcome', '')
+            if outcome == 'unreached':
+                witness_items.append(
+                    f"<li class='text-unreached' style='margin-bottom: 4px;' title='Skipped due to Fail-Fast timeout'>{escape_html(test_name)}</li>")
+            else:
+                witness_items.append(f"<li style='margin-bottom: 4px;'>{escape_html(test_name)}</li>")
+        witness_list = "".join(witness_items)
     ide_link = to_idea_link(project_dir, probe['fqcn'], False)
 
     return f"""
@@ -160,7 +168,8 @@ def build_ledger_html(master_probes, project_dir):
         return {
             'id': mp['id'], 'desc': mp['desc'], 'fqcn': mp['fqcn'],
             'method': mp['method'], 'tests': sorted(mp['test_outcomes'].keys()),
-            'line': mp.get('line', -1)
+            'line': mp.get('line', -1),
+            'outcomes_dict': mp['test_outcomes']
         }
 
     ledger_t1 = []
@@ -500,10 +509,7 @@ def build_test_rows(test_stats, test_summary, global_tier3_probes, project_dir):
 # ---------------------------------------------------------------------------
 
 def build_code_rows(dashboard_methods, master_probes, project_dir):
-    """Build all method row HTML for the Failure-Centric tab.
-
-    Returns (code_rows_html, valid_methods_count, total_t2_unreviewed).
-    """
+    """Build all method row HTML for the Failure-Centric tab."""
     code_rows = ""
     valid_methods_count = 0
     total_t2_unreviewed = 0
@@ -521,70 +527,63 @@ def build_code_rows(dashboard_methods, master_probes, project_dir):
 
         display_name = f"{m_name}()" if c_name == m_name else f"{c_name}.{m_name}()"
 
-        inner_code_html = f"""
-        <div class='details-section'>
-            <div class='details-title text-warning accordion-header' onclick="toggleAccordion('content-code-t2-{safe_m_id}', 'icon-code-t2-{safe_m_id}')">
-                <span><span id='icon-code-t2-{safe_m_id}' class='accordion-icon'>▼</span> Execution Crashes <span id='count-code-t2-{safe_m_id}'>[{len(stats['probes'])} Probes]</span></span>
-            </div>
-            <div id='content-code-t2-{safe_m_id}' style='display: block;'>
-                <ul class='details-list' id='list-code-t2-{safe_m_id}'>
-        """
-        for p in stats['probes']:
+        pure_probes = [p for p in stats['probes'] if not p.get('is_mixed', False)]
+        mixed_probes = [p for p in stats['probes'] if p.get('is_mixed', False)]
+
+        def build_probe_item_html(p):
             action_disp = build_action_trace(p)
             ide_link = to_idea_link(project_dir, m_fqcn, False)
 
             mp_data = master_probes.get(p['id'])
             test_items = ""
-            n_clean = n_dirty = n_survived = 0
+            n_clean = n_dirty = n_survived = n_unreached = 0
             if mp_data:
                 for t_name, t_data in mp_data['test_outcomes'].items():
                     outcome = t_data['outcome']
                     exception = t_data['exception']
+
+                    if outcome == 'unreached':
+                        n_unreached += 1
+                        test_items += f"<li class='text-unreached' style='margin-bottom:3px; display:flex; align-items:center; gap:8px;' title='Skipped due to Fail-Fast timeout'><span style='font-size:11px; font-weight:600; color:white; background:#6c757d; padding:2px 7px; border-radius:9999px; flex-shrink:0;'>Unreached</span><span class='code-font' style='font-size:12px; color:var(--text-muted);'>{escape_html(t_name)}</span></li>"
+                        continue
+
                     if outcome == 'clean':
-                        color = 'var(--success-text)';
-                        bg = 'var(--success-bg)';
-                        label = 'Clean Kill'
+                        color, bg, label = 'var(--success-text)', 'var(--success-bg)', 'Clean Kill'
                         n_clean += 1
                     elif outcome == 'dirty':
-                        color = 'var(--warning-text)';
-                        bg = 'var(--warning-bg)';
+                        color, bg = 'var(--warning-text)', 'var(--warning-bg)'
                         label = f'Exception: {exception}' if exception else 'Exception'
                         n_dirty += 1
                     elif outcome == 'timeout':
-                        color = 'var(--warning-text)';
-                        bg = 'var(--warning-bg)';
-                        label = 'TIMEOUT'
+                        color, bg, label = 'var(--warning-text)', 'var(--warning-bg)', 'TIMEOUT'
                         n_dirty += 1
                     else:
-                        color = 'var(--danger-text)';
-                        bg = 'var(--danger-bg)';
-                        label = 'Survived'
+                        color, bg, label = 'var(--danger-text)', 'var(--danger-bg)', 'Survived'
                         n_survived += 1
                     test_items += f"<li style='margin-bottom:3px; display:flex; align-items:center; gap:8px;'><span style='font-size:11px; font-weight:600; color:{color}; background:{bg}; padding:2px 7px; border-radius:9999px; flex-shrink:0;'>{label}</span><span class='code-font' style='font-size:12px; color:var(--text-muted);'>{escape_html(t_name)}</span></li>"
+
             if not test_items:
                 test_items = "<li style='color:var(--text-muted); font-style:italic;'>No outcomes recorded.</li>"
-            total_witnesses = n_clean + n_dirty + n_survived
-            summary = f"Hit by {total_witnesses} test{'s' if total_witnesses != 1 else ''}. <strong style='color:var(--success-text);'>{n_clean} clean</strong>, <strong style='color:var(--warning-text);'>{n_dirty} crashed</strong>, <strong style='color:var(--danger-text);'>{n_survived} missed</strong>."
 
-            # Build JSON test records for the View Tests modal
+            total_witnesses = n_clean + n_dirty + n_survived
+            unreached_str = f", <strong style='color:#6c757d;'>{n_unreached} unreached</strong>" if n_unreached > 0 else ""
+            summary = f"Targeted by {total_witnesses + n_unreached} test{'s' if (total_witnesses + n_unreached) != 1 else ''}. <strong style='color:var(--success-text);'>{n_clean} clean</strong>, <strong style='color:var(--warning-text);'>{n_dirty} crashed</strong>, <strong style='color:var(--danger-text);'>{n_survived} missed</strong>{unreached_str}."
+
             test_records = []
             if mp_data:
                 for t_name, t_data in mp_data['test_outcomes'].items():
-                    outcome = t_data['outcome']
-                    exception = t_data.get('exception', '')
-                    t_class = t_name.split('#')[0] if '#' in t_name else t_name
-                    t_method = t_name.split('#')[1] if '#' in t_name else 'unknown'
                     test_records.append({
                         'name': t_name,
-                        'tClass': t_class,
-                        'tMethod': t_method,
-                        'outcome': outcome,
-                        'exception': exception or '',
-                        'testLink': to_idea_link(project_dir, t_class, is_test=True),
+                        'tClass': t_name.split('#')[0] if '#' in t_name else t_name,
+                        'tMethod': t_name.split('#')[1] if '#' in t_name else 'unknown',
+                        'outcome': t_data['outcome'],
+                        'exception': t_data.get('exception', ''),
+                        'testLink': to_idea_link(project_dir, t_name.split('#')[0] if '#' in t_name else t_name,
+                                                 is_test=True),
                     })
             test_records_json = json.dumps(test_records, ensure_ascii=True).replace('&', '&amp;').replace('"', '&quot;')
 
-            inner_code_html += f"""
+            return f"""
             <li id='code-probe-{p['id']}' data-state='unreviewed' class='probe-item' style='border-left-color: var(--warning);'
                 data-tests="{test_records_json}"
                 data-probe-fqcn="{escape_html(m_fqcn)}" data-probe-method="{escape_html(m_name)}" data-probe-line="{p.get('line', -1)}">
@@ -615,8 +614,38 @@ def build_code_rows(dashboard_methods, master_probes, project_dir):
                 </div>
             </li>
             """
-        inner_code_html += "</ul></div></div>"
 
+        inner_code_html = ""
+
+        # 1. PURE DIRTY KILLS
+        if pure_probes:
+            inner_code_html += f"""
+            <div class='details-section'>
+                <div class='details-title text-warning accordion-header' onclick="toggleAccordion('content-code-t2-{safe_m_id}', 'icon-code-t2-{safe_m_id}')">
+                    <span><span id='icon-code-t2-{safe_m_id}' class='accordion-icon'>▼</span> Pure Execution Crashes <span id='count-code-t2-{safe_m_id}'>[{len(pure_probes)} Probes]</span></span>
+                </div>
+                <div id='content-code-t2-{safe_m_id}' style='display: block;'>
+                    <ul class='details-list' id='list-code-t2-{safe_m_id}'>
+            """
+            for p in pure_probes:
+                inner_code_html += build_probe_item_html(p)
+            inner_code_html += "</ul></div></div>"
+
+        # 2. MIXED KILLS (Brittle Tests)
+        if mixed_probes:
+            inner_code_html += f"""
+            <div class='details-section'>
+                <div class='details-title text-orange accordion-header' onclick="toggleAccordion('content-code-mixed-{safe_m_id}', 'icon-code-mixed-{safe_m_id}')">
+                    <span><span id='icon-code-mixed-{safe_m_id}' class='accordion-icon'>▼</span> Mixed Outcomes (Brittle Tests) <span id='count-code-mixed-{safe_m_id}'>[{len(mixed_probes)} Probes]</span></span>
+                </div>
+                <div id='content-code-mixed-{safe_m_id}' style='display: block;'>
+                    <ul class='details-list' id='list-code-mixed-{safe_m_id}'>
+            """
+            for p in mixed_probes:
+                inner_code_html += build_probe_item_html(p)
+            inner_code_html += "</ul></div></div>"
+
+        # 3. FILTERED NOISE
         inner_code_html += f"""
         <div class='details-section' id='code-noise-section-{safe_m_id}' style='display: none;'>
             <div class='details-title text-muted accordion-header' onclick="toggleAccordion('content-code-noise-{safe_m_id}', 'icon-code-noise-{safe_m_id}')">
@@ -628,6 +657,12 @@ def build_code_rows(dashboard_methods, master_probes, project_dir):
         </div>
         """
 
+        # Build the badge text
+        crashes_text = f"<span style='color:var(--warning);'>{len(pure_probes)} Pure Crashes</span>" if pure_probes else ""
+        mixed_text = f"<span style='color:var(--orange);'>{len(mixed_probes)} Mixed</span>" if mixed_probes else ""
+        badge_sep = " | " if (crashes_text and mixed_text) else ""
+        row_badge_html = crashes_text + badge_sep + mixed_text
+
         code_rows += f"""
         <tr class="clickable-row" onclick="toggleRow(event, 'code-desc-{safe_m_id}')">
             <td class="font-medium text-main">
@@ -636,7 +671,7 @@ def build_code_rows(dashboard_methods, master_probes, project_dir):
                     <span class="expand-hint" style="flex-shrink: 0;">Show details ▼</span>
                 </div>
             </td>
-            <td class="text-center"><div id="code-crash-count-{safe_m_id}" class="scrollable-text font-medium text-warning" style="text-align:center;">{len(stats['probes'])} Crashes</div></td>
+            <td class="text-center"><div id="code-crash-count-{safe_m_id}" class="scrollable-text font-medium" style="text-align:center;">{row_badge_html}</div></td>
             <td id="code-badge-{safe_m_id}" class="text-right"><div class="scrollable-text" style="text-align:right;">
                 <span class="status-pill action">[ {len(stats['probes'])} Unreviewed ]</span>
             </div></td>
@@ -770,6 +805,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             .badge-warning {{ background-color: var(--warning-bg); color: var(--warning-text); border: 1px solid #fde68a; }}
             .badge-success {{ background-color: var(--success-bg); color: var(--success-text); border: 1px solid #a7f3d0; }}
             .badge-primary {{ background-color: var(--primary-bg); color: #1e40af; border: 1px solid #bfdbfe; }}
+            .badge-unreached {{ background-color: #6c757d; color: white; }}
 
             .text-danger {{ color: var(--danger) !important; border-bottom-color: var(--danger) !important; }}
             .text-warning {{ color: var(--warning) !important; border-bottom-color: var(--warning) !important; }}
@@ -779,6 +815,7 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
             .text-muted {{ color: var(--text-muted) !important; border-bottom-color: var(--text-muted) !important; }}
             .text-primary {{ color: var(--primary) !important; border-bottom-color: var(--primary) !important; }}
             .text-main {{ color: var(--text-main); }}
+            .text-unreached {{ text-decoration: line-through; color: #adb5bd; font-style: italic; }}
 
             .clickable-row {{ cursor: pointer; transition: background-color 0.15s; }}
             .clickable-row:hover {{ background-color: #f8fafc; }}
@@ -2017,7 +2054,12 @@ def generate_dashboard(project_dir, dashboard_ledger, dashboard_methods, test_st
                     tests.forEach(t => {{
                         const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
                         let color, bg, border, label;
-                        if (t.outcome === 'clean') {{
+                        let textClass = '';
+
+                        if (t.outcome === 'unreached') {{
+                            color='white'; bg='#6c757d'; border='#6c757d'; label='Unreached';
+                            textClass = 'text-unreached';
+                        }} else if (t.outcome === 'clean') {{
                             color='var(--success-text)'; bg='var(--success-bg)'; border='#a7f3d0'; label='Clean Kill';
                         }} else if (t.outcome === 'dirty') {{
                             color='var(--warning-text)'; bg='var(--warning-bg)'; border='#fde68a';

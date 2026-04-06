@@ -13,23 +13,33 @@ public class PerturbationJUnit5Extension implements BeforeEachCallback, AfterEac
 
     @Override
     public void beforeEach(ExtensionContext context) {
-        TestContext.enter(stableId(context));
+        String id = stableId(context);
+        TestContext.enter(id);
+        TestOutcomeTracker.start(id);
+        ReportOrchestrator.dumpOutcomesOnly(AgentConfig.OUT_DIR);
     }
 
     @Override
     public void afterEach(ExtensionContext context) {
         TestContext.exit();
-        ReportOrchestrator.generateAllReports(AgentConfig.OUT_DIR);
     }
 
     @Override
     public void testSuccessful(ExtensionContext context) {
         TestOutcomeTracker.pass(stableId(context));
+        ReportOrchestrator.generateAllReports(AgentConfig.OUT_DIR);
     }
 
     @Override
     public void testFailed(ExtensionContext context, Throwable cause) {
         TestOutcomeTracker.fail(stableId(context), cause);
+        ReportOrchestrator.generateAllReports(AgentConfig.OUT_DIR);
+    }
+
+    @Override
+    public void testAborted(ExtensionContext context, Throwable cause) {
+        TestOutcomeTracker.abort(stableId(context));
+        ReportOrchestrator.generateAllReports(AgentConfig.OUT_DIR);
     }
 
     private static String stableId(ExtensionContext context) {

@@ -2,15 +2,12 @@ import json
 import os
 import re
 from collections import defaultdict
-from core.config import get_out_dir, FILE_PROBES, FILE_HITS, FILE_OUTCOMES, FILE_PERTURBATIONS
+from .config import get_out_dir, FILE_PROBES, FILE_HITS, FILE_OUTCOMES, FILE_PERTURBATIONS
 
 _GENERIC_RE = re.compile(r'<.*?>')
 
+
 def parse_probe(desc):
-    """
-    Extract all structured fields from a probe description string.
-    Returns (modifier, fqcn, method_name, location, operator)
-    """
     parts = desc.rsplit(" in ", 1)
     if len(parts) != 2:
         return "unknown", "unknown", "unknown", "Unknown", "Unknown"
@@ -82,6 +79,7 @@ def _read_jsonl(project_dir: str, filename: str) -> list[dict]:
         pass
     return results
 
+
 def read_probes(project_dir: str) -> dict[int, dict]:
     result = {}
     for obj in _read_jsonl(project_dir, FILE_PROBES):
@@ -96,6 +94,7 @@ def read_probes(project_dir: str) -> dict[int, dict]:
             pass
     return result
 
+
 def read_hits(project_dir: str) -> defaultdict[int, set[str]]:
     hits: defaultdict[int, set[str]] = defaultdict(set)
     for obj in _read_jsonl(project_dir, FILE_HITS):
@@ -108,6 +107,7 @@ def read_hits(project_dir: str) -> defaultdict[int, set[str]]:
             pass
     return hits
 
+
 def read_test_outcomes(project_dir: str) -> dict[str, str]:
     result = {}
     for obj in _read_jsonl(project_dir, FILE_OUTCOMES):
@@ -115,10 +115,13 @@ def read_test_outcomes(project_dir: str) -> dict[str, str]:
             test_name = obj.get("test", "")
             if test_name == "UNKNOWN_TEST":
                 continue
-            result[test_name] = obj["status"].strip()
+            status = obj.get("outcome") or obj.get("status")
+            if status:
+                result[test_name] = status.strip()
         except (KeyError, AttributeError):
             pass
     return result
+
 
 def read_perturbations(project_dir: str) -> defaultdict[str, list[str]]:
     actions_map: defaultdict[str, list[str]] = defaultdict(list)
