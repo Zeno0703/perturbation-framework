@@ -4,7 +4,7 @@ clear; clc; close all;
 DB_PATH = '../data/database.json';
 FULL_SUITE_SIZES = containers.Map( ...
     {'JSemVer', 'Joda-Money', 'Joda-Beans', 'Joda-Convert', 'Commons-CLI', 'Commons-CSV', 'Commons-Validator'}, ...
-    {334, 1495, 2452, 574, 977, 923, 992} ...
+    {334, 1495, 1226, 198, 977, 923, 992} ...
 );
 SAVE_FIGS = false;
 BASE_DIR = '../';
@@ -303,6 +303,63 @@ sgtitle(fig6, 'Probe Hit-Count Rank per Project (Clean/Dirty/Survived)', 'FontWe
 
 if SAVE_FIGS, save_fig(fig6, OUT_DIR, 'fig6_rank_scatter_per_project'); end
 
+%% --- Figure 6b: Hit-count rank scatter (JSemVer, Joda-Money, Commons-CSV on one line) ---
+fprintf('Generating Fig 6b...\n');
+
+target_projects = {'JSemVer', 'Joda-Money', 'Commons-CSV'};
+nT = numel(target_projects);
+
+% Create a figure wide enough to hold 3 plots in a single row
+fig6b = figure('Position',[100 100 nT*390 280], 'Color','w');
+last_ax6b = [];
+
+for i = 1:nT
+    proj_name = target_projects{i};
+    mask = strcmp(probe_projects, proj_name);
+    h_proj = probe_hits(mask);
+    out_proj = probe_outcomes(mask);
+    
+    % Filter to only executed, non-timeout probes with meaningful outcomes
+    keep = strcmp(out_proj,'Clean Kill') | strcmp(out_proj,'Dirty Kill') | strcmp(out_proj,'Survived');
+    h_proj = h_proj(keep);
+    out_proj = out_proj(keep);
+    
+    [h_sorted, sort_idx] = sort(h_proj, 'descend');
+    out_sorted = out_proj(sort_idx);
+    ranks = 1:numel(h_sorted);
+    
+    % Use 1 row, 3 columns to put them all on a single line
+    ax6b = subplot(1, nT, i);
+    hold(ax6b,'on');
+    
+    for k = 1:numel(SCATTER_OUTCOME_ORDER)
+        sel = strcmp(out_sorted, SCATTER_OUTCOME_ORDER{k});
+        if any(sel)
+            scatter(ax6b, ranks(sel), h_sorted(sel)+0.5, 14, scatter_oc_colors{k}, 'filled', 'MarkerFaceAlpha',0.60, 'DisplayName', SCATTER_OUTCOME_LABELS{k});
+        end
+    end
+    
+    yline(ax6b, 1.5, ':', 'Color',[0.55 0.55 0.55], 'LineWidth',1.1, 'HandleVisibility','off');
+    ax6b.YScale = 'log';
+    ax6b.Title.String = proj_name;
+    ax6b.Title.FontWeight = 'bold';
+    ax6b.Box = 'off';
+    ax6b.YGrid = 'on';
+    ax6b.XGrid = 'on';
+    ax6b.GridAlpha = 0.12;
+    
+    n_shown = numel(h_sorted);
+    text(ax6b, max(n_shown*0.03,1), max(h_sorted)*0.35, sprintf('n=%d shown', n_shown), 'HorizontalAlignment','left','FontSize',7.5,'Color',[0.4 0.4 0.4]);
+    hold(ax6b,'off');
+    last_ax6b = ax6b;
+end
+
+% Add legend to the last axis
+legend(last_ax6b, 'Location','northeast','Box','off','FontSize',9);
+sgtitle(fig6b, 'Probe Hit-Count Rank (Selected Projects)', 'FontWeight','bold','FontSize',12);
+
+if SAVE_FIGS, save_fig(fig6b, OUT_DIR, 'fig6b_rank_scatter_selected'); end
+
 %% --- Figure 7: Hit-count rank scatter aggregated ---
 fprintf('Generating Fig 7...\n');
 % Filter to clean kills, dirty kills, and survivals only
@@ -528,7 +585,7 @@ for i = 1:nP
     end
 end
 
-fig10 = figure('Position',[100 100 FIG_W FIG_H], 'Color','w');
+fig10 = figure('Position',[100 100 FIG_W 350], 'Color','w');
 
 ax10L = subplot(1,2,1);
 draw_stacked(ax10L, pct_9(:,1:3), tot_9, bin_labels_9, OUTCOME_COLORS(1:3,:), OUTCOME_LABELS(1:3), 5);

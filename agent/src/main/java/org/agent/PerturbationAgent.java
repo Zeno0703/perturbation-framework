@@ -3,6 +3,7 @@ package org.agent;
 import org.instrumentation.InstrumentationInstaller;
 import org.registry.ProbeCatalog;
 import org.runtime.ProbeExecutionTracker;
+import org.runtime.ReportOrchestrator;
 import org.runtime.TestOutcomeTracker;
 
 import java.lang.instrument.Instrumentation;
