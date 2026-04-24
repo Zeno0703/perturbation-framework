@@ -4,11 +4,11 @@ from collections import defaultdict
 import os
 
 PROJECT_XML_MAP = {
-    "JSemVer":           "data/mutations-jsemver.xml",
-    "Joda-Money":        "data/mutations-joda-money.xml",
-    "Commons-CLI":       "data/mutations-commons-cli.xml",
-    "Commons-CSV":       "data/mutations-commons-csv.xml",
-    "Commons-Validator": "data/mutations-commons-validator.xml",
+    "JSemVer":           "../data/mutations-jsemver.xml",
+    "Joda-Money":        "../data/mutations-joda-money.xml",
+    "Joda-Convert":      "../data/mutations-joda-convert.xml",
+    "Commons-CLI":       "../data/mutations-commons-cli.xml",
+    "Commons-Validator": "../data/mutations-commons-validator.xml",
 }
 
 PERTURB_JSON_PATH = "../data/database.json"
@@ -16,7 +16,7 @@ PERTURB_JSON_PATH = "../data/database.json"
 PITEST_KILL_STATUSES  = {'KILLED', 'TIMED_OUT', 'MEMORY_ERROR', 'RUN_ERROR'}
 PERTURB_KILL_STATUSES = {'Clean Kill', 'Dirty Kill', 'TIMEOUT'}
 
-DISPLAY_LIMIT = 20
+DISPLAY_LIMIT = 50
 
 
 def load_pitest_data(xml_path):
